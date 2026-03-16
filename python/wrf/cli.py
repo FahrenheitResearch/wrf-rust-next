@@ -322,6 +322,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", title="commands")
 
+    # ── gui ──
+    p_gui = sub.add_parser("gui", help="Launch interactive explorer GUI.")
+    p_gui.add_argument("file", nargs="?", default=None, help="Path to WRF output file (optional, can browse).")
+
     # ── info ──
     p_info = sub.add_parser("info", help="Print file metadata and grid info.")
     p_info.add_argument("file", help="Path to WRF output file.")
@@ -365,7 +369,13 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(0)
 
+    def cmd_gui(a):
+        from wrf.gui import WrfExplorerApp
+        app = WrfExplorerApp(a.file)
+        app.run()
+
     dispatch = {
+        "gui": cmd_gui,
         "info": cmd_info,
         "plot": cmd_plot,
         "panel": cmd_panel,
