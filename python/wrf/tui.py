@@ -324,22 +324,8 @@ class WrfTui(App):
         tbl.add_row("Name", f"[bold]{info['name']}[/bold]")
         tbl.add_row("Description", info["description"])
         tbl.add_row("Units", info["units"])
-
-        # Show stats if file is loaded
         if self.wf:
-            try:
-                stats = _compute_stats(self.wf, varname, 0, None)
-                if "error" not in stats:
-                    tbl.add_row("Shape", str(stats["shape"]))
-                    tbl.add_row("Min", f"{stats['min']:.4g}")
-                    tbl.add_row("Max", f"{stats['max']:.4g}")
-                    tbl.add_row("Mean", f"{stats['mean']:.4g}")
-                    tbl.add_row("Std", f"{stats['std']:.4g}")
-                else:
-                    tbl.add_row("Shape", str(stats["shape"]))
-                    tbl.add_row("", f"[red]{stats['error']}[/red]")
-            except Exception as e:
-                tbl.add_row("", f"[red]{e}[/red]")
+            tbl.add_row("", "[dim]Press Enter to select, s for stats[/dim]")
 
         detail.update(Panel(tbl, title=varname, border_style="blue"))
 
