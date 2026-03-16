@@ -537,8 +537,7 @@ def plot_field(
             pass
 
     if is_geo and gridlines:
-        gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.5,
-                          linestyle="--")
+        gl = ax.gridlines(draw_labels=True, linewidth=0, alpha=0)
         gl.top_labels = False
         gl.right_labels = False
 
@@ -1167,3 +1166,156 @@ def show():
 def savefig(fig, path: str, dpi: int = 150, **kwargs):
     """Save a figure with good defaults for met imagery."""
     fig.savefig(path, dpi=dpi, bbox_inches="tight", facecolor="white", **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Multi-timestep rendering + GIF
+# ---------------------------------------------------------------------------
+
+def render_timesteps(
+    wrffile,
+    varname: str,
+    timesteps=None,
+    outdir: str = ".",
+    prefix: str = "",
+    dpi: int = 150,
+    gif: bool = False,
+    gif_path: str | None = None,
+    gif_fps: int = 4,
+    fixed_scale: bool = True,
+    progress_callback=None,
+    **getvar_kwargs,
+):
+    """Render a variable across multiple timesteps with consistent scale.
+
+    Parameters
+    ----------
+    wrffile : WrfFile or str
+        The WRF file.
+    varname : str
+        Variable name.
+    timesteps : list of int, or None
+        Which timesteps to render. None = all.
+    outdir : str
+        Directory for output PNGs.
+    prefix : str
+        Filename prefix (default: varname).
+    dpi : int
+        Image resolution.
+    gif : bool
+        If True, also create an animated GIF from the frames.
+    gif_path : str
+        Path for the GIF file. Default: outdir/varname.gif.
+    gif_fps : int
+        Frames per second for the GIF.
+    fixed_scale : bool
+        If True (default), compute min/max across ALL timesteps first
+        and use the same colorbar range for every frame.
+    progress_callback : callable(current, total, varname) or None
+        Called after each frame for progress reporting.
+    **getvar_kwargs
+        Passed to getvar (units, parcel_type, etc).
+
+    Returns
+    -------
+    list of str
+        Paths to the generated PNG files.
+    """
+    _, plt = _import_mpl()
+    wf = _ensure_wrffile(wrffile)
+
+    if timesteps is None:
+        timesteps = list(range(wf.nt))
+
+    from wrf import getvar
+
+    gv_kwargs = dict(getvar_kwargs)
+    if not prefix:
+        prefix = varname
+
+    # ── Pass 1: compute global scale if fixed_scale ──
+    global_vmin = None
+    global_vmax = None
+    if fixed_scale and len(timesteps) > 1:
+        all_mins = []
+        all_maxs = []
+        for t in timesteps:
+            data = getvar(wf, varname, timeidx=t, **gv_kwargs)
+            if data.ndim == 3:
+                data = data[0]
+            valid = data[np.isfinite(data)]
+            if len(valid) > 0:
+                all_mins.append(float(np.percentile(valid, 2)))
+                all_maxs.append(float(np.percentile(valid, 98)))
+        if all_mins:
+            global_vmin = min(all_mins)
+            global_vmax = max(all_maxs)
+
+    # ── Pass 2: render each frame ──
+    style = _get_style(varname)
+    fixed_levels = None
+    if global_vmin is not None and global_vmax is not None:
+        # Build levels from global range
+        if "levels" in style and style["levels"] is not None:
+            fixed_levels = style["levels"]
+        else:
+            fixed_levels = np.linspace(global_vmin, global_vmax, 20)
+
+    os.makedirs(outdir, exist_ok=True)
+    png_paths = []
+
+    for i, t in enumerate(timesteps):
+        kwargs = dict(getvar_kwargs)
+        if fixed_levels is not None:
+            fig, ax = plot_field(wf, varname, timeidx=t, levels=fixed_levels, **kwargs)
+        else:
+            fig, ax = plot_field(wf, varname, timeidx=t, **kwargs)
+
+        fname = f"{prefix}_t{t:04d}.png"
+        fpath = os.path.join(outdir, fname)
+        fig.savefig(fpath, dpi=dpi, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        png_paths.append(fpath)
+
+        if progress_callback:
+            progress_callback(i + 1, len(timesteps), varname)
+
+    # ── GIF ──
+    if gif and len(png_paths) > 1:
+        _make_gif(png_paths, gif_path or os.path.join(outdir, f"{prefix}.gif"), gif_fps)
+
+    return png_paths
+
+
+def _make_gif(png_paths: list[str], gif_path: str, fps: int = 4):
+    """Create an animated GIF from a list of PNG files."""
+    try:
+        from PIL import Image
+        frames = []
+        for p in png_paths:
+            img = Image.open(p).convert("RGBA")
+            # Convert to RGB (GIF doesn't support alpha)
+            bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            bg.paste(img, mask=img.split()[3])
+            frames.append(bg.convert("RGB"))
+        if frames:
+            duration = int(1000 / fps)
+            frames[0].save(
+                gif_path,
+                save_all=True,
+                append_images=frames[1:],
+                duration=duration,
+                loop=0,
+                optimize=True,
+            )
+    except ImportError:
+        # Fallback: use imageio if available
+        try:
+            import imageio.v3 as iio
+            images = [iio.imread(p) for p in png_paths]
+            iio.imwrite(gif_path, images, duration=1000 // fps, loop=0)
+        except ImportError:
+            raise ImportError(
+                "GIF generation requires either Pillow (pip install Pillow) "
+                "or imageio (pip install imageio)"
+            )

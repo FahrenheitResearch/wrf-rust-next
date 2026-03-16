@@ -59,6 +59,21 @@ def _get_var_list() -> list[dict]:
     return list_variables()
 
 
+def _parse_timesteps(text: str, nt: int) -> list[int]:
+    """Parse timestep input like '0', '0-5', '0,2,4', 'all'."""
+    text = text.strip().lower()
+    if text in ("all", "*", ""):
+        return list(range(nt))
+    if "-" in text and "," not in text:
+        parts = text.split("-")
+        start = int(parts[0])
+        end = int(parts[1])
+        return list(range(start, min(end + 1, nt)))
+    if "," in text:
+        return [int(x.strip()) for x in text.split(",") if x.strip().isdigit()]
+    return [int(text)]
+
+
 # ── App ──────────────────────────────────────────────────────────────────────
 
 class WrfTui(App):
@@ -149,8 +164,11 @@ class WrfTui(App):
         with Vertical(id="action-panel"):
             yield Label("[bold]Selected[/bold]", classes="panel-title")
             yield OptionList(id="selected-list")
+            yield Label("Timesteps [dim](e.g. 0  or  0-5  or  all)[/dim]:", classes="panel-title")
+            yield Input(value="0", id="timestep-input")
             yield Button("Export to .npy", id="btn-export", variant="primary", classes="action-btn")
             yield Button("Plot to .png", id="btn-plot", variant="default", classes="action-btn")
+            yield Button("Plot to .gif", id="btn-gif", variant="default", classes="action-btn")
             yield Button("Compute stats", id="btn-stats", variant="default", classes="action-btn")
             yield Label("", id="progress-label")
             yield ProgressBar(id="progress-bar", total=100, show_eta=False)
@@ -346,6 +364,14 @@ class WrfTui(App):
             return False
         return True
 
+    def _get_timesteps(self) -> list[int]:
+        text = self.query_one("#timestep-input", Input).value
+        nt = self.wf.nt if self.wf else 1
+        try:
+            return _parse_timesteps(text, nt)
+        except Exception:
+            return [0]
+
     @on(Button.Pressed, "#btn-export")
     def _on_export(self) -> None:
         if self._pre_action_check():
@@ -356,6 +382,15 @@ class WrfTui(App):
         if self._pre_action_check():
             self._run_plot()
 
+    @on(Button.Pressed, "#btn-gif")
+    def _on_gif(self) -> None:
+        if self._pre_action_check():
+            ts = self._get_timesteps()
+            if len(ts) < 2:
+                self.notify("Need 2+ timesteps for GIF (e.g. '0-5' or 'all')", severity="warning")
+                return
+            self._run_gif()
+
     @on(Button.Pressed, "#btn-stats")
     def _on_stats(self) -> None:
         if self._pre_action_check():
@@ -365,28 +400,28 @@ class WrfTui(App):
     def _run_export(self) -> None:
         from wrf import getvar
         outdir = os.path.dirname(self.wf_path) if self.wf_path else "."
-        total = len(self.selected_vars)
+        timesteps = self._get_timesteps()
+        jobs = [(v, t) for v in self.selected_vars for t in timesteps]
+        total = len(jobs)
         log_lines = []
 
         self.call_from_thread(self._reset_progress, total)
 
-        for i, varname in enumerate(self.selected_vars):
+        for i, (varname, t) in enumerate(jobs):
             self.call_from_thread(self._set_progress_label,
-                                  f"Exporting {varname}  ({i+1}/{total})")
-            outpath = os.path.join(outdir, f"{varname}.npy")
+                                  f"Exporting {varname} t={t}  ({i+1}/{total})")
+            suffix = f"_t{t:04d}" if len(timesteps) > 1 else ""
+            outpath = os.path.join(outdir, f"{varname}{suffix}.npy")
             try:
-                data = getvar(self.wf, varname, timeidx=0)
+                data = getvar(self.wf, varname, timeidx=t)
                 np.save(outpath, data)
-                log_lines.append(f"[green]\u2713[/green] {varname}  {data.shape}  -> {os.path.basename(outpath)}")
+                log_lines.append(f"[green]\u2713[/green] {varname} t={t}  {data.shape}")
             except Exception as e:
-                log_lines.append(f"[red]\u2717[/red] {varname}: {e}")
-
+                log_lines.append(f"[red]\u2717[/red] {varname} t={t}: {e}")
             self.call_from_thread(self._advance_progress, i + 1, total)
 
-        self.call_from_thread(self._set_progress_label,
-                              f"Done - exported {total} variables to {outdir}")
+        self.call_from_thread(self._set_progress_label, f"Done - {total} exports to {outdir}")
         self.call_from_thread(self._set_log, "\n".join(log_lines))
-        self.call_from_thread(self.notify, f"Exported {total} variables")
 
     @work(thread=True)
     def _run_plot(self) -> None:
@@ -400,6 +435,42 @@ class WrfTui(App):
             return
 
         outdir = os.path.dirname(self.wf_path) if self.wf_path else "."
+        timesteps = self._get_timesteps()
+        jobs = [(v, t) for v in self.selected_vars for t in timesteps]
+        total = len(jobs)
+        log_lines = []
+
+        self.call_from_thread(self._reset_progress, total)
+
+        for i, (varname, t) in enumerate(jobs):
+            self.call_from_thread(self._set_progress_label,
+                                  f"Plotting {varname} t={t}  ({i+1}/{total})")
+            suffix = f"_t{t:04d}" if len(timesteps) > 1 else ""
+            outpath = os.path.join(outdir, f"{varname}{suffix}.png")
+            try:
+                fig, _ = plot_field(self.wf, varname, timeidx=t)
+                fig.savefig(outpath, dpi=150, bbox_inches="tight")
+                plt.close(fig)
+                log_lines.append(f"[green]\u2713[/green] {varname} t={t}")
+            except Exception as e:
+                log_lines.append(f"[red]\u2717[/red] {varname} t={t}: {e}")
+            self.call_from_thread(self._advance_progress, i + 1, total)
+
+        self.call_from_thread(self._set_progress_label, f"Done - {total} plots to {outdir}")
+        self.call_from_thread(self._set_log, "\n".join(log_lines))
+
+    @work(thread=True)
+    def _run_gif(self) -> None:
+        try:
+            from wrf.plot import render_timesteps
+            import matplotlib
+            matplotlib.use("Agg")
+        except ImportError:
+            self.call_from_thread(self.notify, "matplotlib not installed", severity="error")
+            return
+
+        outdir = os.path.dirname(self.wf_path) if self.wf_path else "."
+        timesteps = self._get_timesteps()
         total = len(self.selected_vars)
         log_lines = []
 
@@ -407,32 +478,44 @@ class WrfTui(App):
 
         for i, varname in enumerate(self.selected_vars):
             self.call_from_thread(self._set_progress_label,
-                                  f"Plotting {varname}  ({i+1}/{total})")
-            outpath = os.path.join(outdir, f"{varname}.png")
+                                  f"Rendering {varname} ({len(timesteps)} frames)  ({i+1}/{total})")
+            gif_path = os.path.join(outdir, f"{varname}.gif")
             try:
-                fig, _ = plot_field(self.wf, varname, timeidx=0)
-                fig.savefig(outpath, dpi=150, bbox_inches="tight")
-                plt.close(fig)
-                log_lines.append(f"[green]\u2713[/green] {varname}  -> {os.path.basename(outpath)}")
+                def _progress(cur, tot, vn):
+                    self.call_from_thread(self._set_progress_label,
+                                          f"Rendering {vn} frame {cur}/{tot}  (var {i+1}/{total})")
+
+                render_timesteps(
+                    self.wf, varname,
+                    timesteps=timesteps,
+                    outdir=outdir,
+                    gif=True,
+                    gif_path=gif_path,
+                    fixed_scale=True,
+                    progress_callback=_progress,
+                )
+                log_lines.append(f"[green]\u2713[/green] {varname}  -> {os.path.basename(gif_path)}")
             except Exception as e:
                 log_lines.append(f"[red]\u2717[/red] {varname}: {e}")
 
             self.call_from_thread(self._advance_progress, i + 1, total)
 
-        self.call_from_thread(self._set_progress_label,
-                              f"Done - plotted {total} variables to {outdir}")
+        self.call_from_thread(self._set_progress_label, f"Done - {total} GIFs to {outdir}")
         self.call_from_thread(self._set_log, "\n".join(log_lines))
-        self.call_from_thread(self.notify, f"Plotted {total} variables")
 
     @work(thread=True)
     def _run_stats(self) -> None:
         from wrf import getvar
-        total = len(self.selected_vars)
+        timesteps = self._get_timesteps()
+        jobs = [(v, t) for v in self.selected_vars for t in timesteps]
+        total = len(jobs)
 
         self.call_from_thread(self._reset_progress, total)
 
         tbl = Table(box=box.ROUNDED, padding=(0, 1))
         tbl.add_column("Variable", style="bold")
+        if len(timesteps) > 1:
+            tbl.add_column("t", justify="right")
         tbl.add_column("Shape")
         tbl.add_column("Min", justify="right")
         tbl.add_column("Max", justify="right")
@@ -440,33 +523,39 @@ class WrfTui(App):
         tbl.add_column("Std", justify="right")
         tbl.add_column("Units", style="dim")
 
-        for i, varname in enumerate(self.selected_vars):
+        for i, (varname, t) in enumerate(jobs):
             self.call_from_thread(self._set_progress_label,
-                                  f"Computing {varname}  ({i+1}/{total})")
+                                  f"Computing {varname} t={t}  ({i+1}/{total})")
             info = next((v for v in self.all_vars if v["name"] == varname), None)
             units = info["units"] if info else ""
             try:
-                data = getvar(self.wf, varname, timeidx=0)
+                data = getvar(self.wf, varname, timeidx=t)
                 valid = data[np.isfinite(data)]
+                row = [varname]
+                if len(timesteps) > 1:
+                    row.append(str(t))
                 if len(valid) > 0:
-                    tbl.add_row(
-                        varname,
+                    row.extend([
                         "x".join(str(d) for d in data.shape),
                         f"{valid.min():.4g}",
                         f"{valid.max():.4g}",
                         f"{valid.mean():.4g}",
                         f"{valid.std():.4g}",
                         units,
-                    )
+                    ])
                 else:
-                    tbl.add_row(varname, "x".join(str(d) for d in data.shape),
-                                "", "", "", "", "[dim]no valid data[/dim]")
+                    row.extend(["x".join(str(d) for d in data.shape), "", "", "", "", "[dim]no data[/dim]"])
+                tbl.add_row(*row)
             except Exception as e:
-                tbl.add_row(varname, "", "", "", "", "", f"[red]{e}[/red]")
+                row = [varname]
+                if len(timesteps) > 1:
+                    row.append(str(t))
+                row.extend(["", "", "", "", "", f"[red]{e}[/red]"])
+                tbl.add_row(*row)
 
             self.call_from_thread(self._advance_progress, i + 1, total)
 
-        self.call_from_thread(self._set_progress_label, f"Done - {total} variables")
+        self.call_from_thread(self._set_progress_label, f"Done - {total} computations")
         self.call_from_thread(self._set_log, tbl)
 
     # ── Progress helpers ──
