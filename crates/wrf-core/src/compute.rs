@@ -24,6 +24,10 @@ pub struct ComputeOpts {
     pub parcel_temperature: Option<f64>,
     /// Custom parcel starting dewpoint (deg C).
     pub parcel_dewpoint: Option<f64>,
+    /// Bottom of layer in pressure (hPa) -- alternative to bottom_m for lapse rates.
+    pub bottom_p: Option<f64>,
+    /// Top of layer in pressure (hPa) -- alternative to top_m for lapse rates.
+    pub top_p: Option<f64>,
     /// Layer type: "fixed" (default) or "effective" (for STP, SRH).
     pub layer_type: Option<String>,
     /// Use virtual temperature instead of absolute temperature (for lapse rates).

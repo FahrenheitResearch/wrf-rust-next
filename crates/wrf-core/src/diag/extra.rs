@@ -253,29 +253,26 @@ pub fn compute_hdw(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 
 /// Generic configurable lapse rate (°C/km). `[ny, nx]`
 ///
-/// Layer bounds are controlled via `opts.bottom_m` and `opts.top_m` (meters AGL).
-/// Defaults to the 0-3 km layer when not specified.
+/// Supports two modes:
+/// - **Height mode** (default): `bottom_m` / `top_m` in meters AGL. Defaults to 0-3 km.
+/// - **Pressure mode**: `bottom_p` / `top_p` in hPa (e.g. 700, 500). When either
+///   pressure bound is set, height bounds are ignored.
+///
 /// If `opts.use_virtual` is `Some(true)`, virtual temperature
 /// Tv = T * (1 + 0.61 * qv) is used instead of absolute temperature.
 pub fn compute_lapse_rate(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    let bottom_m = opts.bottom_m.unwrap_or(0.0);
-    let top_m = opts.top_m.unwrap_or(3000.0);
     let use_virtual = opts.use_virtual == Some(true);
+    let use_pressure = opts.bottom_p.is_some() || opts.top_p.is_some();
 
     let tc = f.temperature_c(t)?;
     let h_agl = f.height_agl(t)?;
-    let qv = if use_virtual {
-        Some(f.qvapor(t)?)
-    } else {
-        None
-    };
+    let qv = if use_virtual { Some(f.qvapor(t)?) } else { None };
+    let pres_hpa = if use_pressure { Some(f.pressure_hpa(t)?) } else { None };
 
     let nx = f.nx;
     let ny = f.ny;
     let nz = f.nz;
     let nxy = nx * ny;
-
-    let depth_km = (top_m - bottom_m) / 1000.0;
 
     let mut lr = vec![0.0f64; nxy];
     lr.par_iter_mut().enumerate().for_each(|(ij, lr_val)| {
@@ -284,7 +281,6 @@ pub fn compute_lapse_rate(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
             let t_c = tc[idx];
             if use_virtual {
                 let q = qv.as_ref().unwrap()[idx].max(0.0);
-                // Tv in °C: convert to K, apply virtual factor, convert back
                 let t_k = t_c + 273.15;
                 let tv_k = t_k * (1.0 + 0.61 * q);
                 tv_k - 273.15
@@ -293,32 +289,64 @@ pub fn compute_lapse_rate(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
             }
         };
 
-        // Interpolate temperature at a target height AGL
-        let interp = |target_h: f64| -> f64 {
-            // If target is at or below lowest level, use lowest level value
-            if h_agl[ij] >= target_h {
-                return temp_at(ij);
-            }
-            for k in 1..nz {
-                let idx = k * nxy + ij;
-                let h = h_agl[idx];
-                if h >= target_h {
-                    let idx_prev = (k - 1) * nxy + ij;
-                    let h_prev = h_agl[idx_prev];
-                    let frac = (target_h - h_prev) / (h - h_prev);
-                    let t_prev = temp_at(idx_prev);
-                    let t_cur = temp_at(idx);
-                    return t_prev + frac * (t_cur - t_prev);
+        if use_pressure {
+            // Pressure mode: interpolate T and H at given pressure levels
+            let p = pres_hpa.as_ref().unwrap();
+            let p_bot = opts.bottom_p.unwrap_or(700.0); // hPa (higher pressure = lower)
+            let p_top = opts.top_p.unwrap_or(500.0);    // hPa (lower pressure = higher)
+
+            let interp_at_p = |target_p: f64| -> (f64, f64) {
+                // Pressure decreases with height; scan upward
+                for k in 0..nz - 1 {
+                    let idx0 = k * nxy + ij;
+                    let idx1 = (k + 1) * nxy + ij;
+                    let p0 = p[idx0];
+                    let p1 = p[idx1];
+                    if p0 >= target_p && p1 < target_p {
+                        let frac = (target_p - p1) / (p0 - p1);
+                        let t_interp = temp_at(idx1) + frac * (temp_at(idx0) - temp_at(idx1));
+                        let h_interp = h_agl[idx1] + frac * (h_agl[idx0] - h_agl[idx1]);
+                        return (t_interp, h_interp);
+                    }
                 }
+                // Fallback: nearest level
+                (temp_at(ij), h_agl[ij])
+            };
+
+            let (t_bot, h_bot) = interp_at_p(p_bot);
+            let (t_top, h_top) = interp_at_p(p_top);
+            let depth_km = (h_top - h_bot).abs() / 1000.0;
+            if depth_km > 0.01 {
+                *lr_val = -(t_top - t_bot) / depth_km;
             }
-            // Above model top – return highest level value
-            temp_at((nz - 1) * nxy + ij)
-        };
+        } else {
+            // Height mode
+            let bottom_m = opts.bottom_m.unwrap_or(0.0);
+            let top_m = opts.top_m.unwrap_or(3000.0);
+            let depth_km = (top_m - bottom_m) / 1000.0;
 
-        let t_bot = interp(bottom_m);
-        let t_top = interp(top_m);
+            let interp_at_h = |target_h: f64| -> f64 {
+                if h_agl[ij] >= target_h {
+                    return temp_at(ij);
+                }
+                for k in 1..nz {
+                    let idx = k * nxy + ij;
+                    if h_agl[idx] >= target_h {
+                        let idx_prev = (k - 1) * nxy + ij;
+                        let h_prev = h_agl[idx_prev];
+                        let frac = (target_h - h_prev) / (h_agl[idx] - h_prev);
+                        return temp_at(idx_prev) + frac * (temp_at(idx) - temp_at(idx_prev));
+                    }
+                }
+                temp_at((nz - 1) * nxy + ij)
+            };
 
-        *lr_val = -(t_top - t_bot) / depth_km;
+            let t_bot = interp_at_h(bottom_m);
+            let t_top = interp_at_h(top_m);
+            if depth_km > 0.01 {
+                *lr_val = -(t_top - t_bot) / depth_km;
+            }
+        }
     });
 
     Ok(lr)

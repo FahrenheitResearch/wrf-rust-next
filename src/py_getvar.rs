@@ -4,7 +4,7 @@ use crate::py_file::{self, WrfFile};
 
 /// Compute a diagnostic variable from a WRF file.
 #[pyfunction]
-#[pyo3(signature = (wrffile, name, timeidx=None, units=None, parcel_type=None, storm_motion=None, top_m=None, bottom_m=None, depth_m=None, parcel_pressure=None, parcel_temperature=None, parcel_dewpoint=None, layer_type=None, use_virtual=None))]
+#[pyo3(signature = (wrffile, name, timeidx=None, units=None, parcel_type=None, storm_motion=None, top_m=None, bottom_m=None, depth_m=None, parcel_pressure=None, parcel_temperature=None, parcel_dewpoint=None, bottom_p=None, top_p=None, layer_type=None, use_virtual=None))]
 fn getvar<'py>(
     py: Python<'py>,
     wrffile: &WrfFile,
@@ -19,6 +19,8 @@ fn getvar<'py>(
     parcel_pressure: Option<f64>,
     parcel_temperature: Option<f64>,
     parcel_dewpoint: Option<f64>,
+    bottom_p: Option<f64>,
+    top_p: Option<f64>,
     layer_type: Option<String>,
     use_virtual: Option<bool>,
 ) -> PyResult<PyObject> {
@@ -32,6 +34,8 @@ fn getvar<'py>(
         parcel_pressure,
         parcel_temperature,
         parcel_dewpoint,
+        bottom_p,
+        top_p,
         layer_type,
         use_virtual,
     };

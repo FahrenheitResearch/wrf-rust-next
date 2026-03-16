@@ -150,6 +150,8 @@ def getvar(
     parcel_pressure=None,
     parcel_temperature=None,
     parcel_dewpoint=None,
+    bottom_p=None,
+    top_p=None,
     layer_type=None,
     use_virtual=None,
     squeeze=True,
@@ -188,6 +190,10 @@ def getvar(
         Custom parcel starting temperature in deg C.
     parcel_dewpoint : float, optional
         Custom parcel starting dewpoint in deg C.
+    bottom_p : float, optional
+        Bottom of layer in hPa for pressure-based lapse rates (e.g. 700).
+    top_p : float, optional
+        Top of layer in hPa for pressure-based lapse rates (e.g. 500).
     layer_type : str, optional
         ``"fixed"`` (default) or ``"effective"`` for STP, SRH.
     use_virtual : bool, optional
@@ -213,6 +219,8 @@ def getvar(
         parcel_pressure=parcel_pressure,
         parcel_temperature=parcel_temperature,
         parcel_dewpoint=parcel_dewpoint,
+        bottom_p=bottom_p,
+        top_p=top_p,
         layer_type=layer_type,
         use_virtual=use_virtual,
     )
