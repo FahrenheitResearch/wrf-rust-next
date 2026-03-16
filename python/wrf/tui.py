@@ -20,21 +20,15 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.widgets import (
-    DataTable,
     Footer,
     Header,
     Input,
     Label,
-    ListItem,
-    ListView,
     OptionList,
-    Select,
     Static,
-    TabbedContent,
-    TabPane,
 )
+from textual.widgets.option_list import Option
 from textual.widget import Widget
-from textual.screen import ModalScreen
 
 from rich.panel import Panel
 from rich.table import Table
@@ -375,7 +369,7 @@ class WrfTui(App):
         var_list.clear_options()
         for v in vars_list:
             label = f"[bold]{v['name']}[/bold]  [dim]{v['units']}[/dim]\n  {v['description']}"
-            var_list.add_option(OptionList.Option(label, id=v["name"]))
+            var_list.add_option(Option(label, id=v["name"]))
 
     @on(Input.Changed, "#filter-input")
     def _on_filter(self, event: Input.Changed) -> None:
