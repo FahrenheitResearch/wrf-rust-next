@@ -373,7 +373,7 @@ def plot_field(
     contour_line_color: str = "k",
     contour_line_kwargs: Optional[dict] = None,
     borders: bool = True,
-    gridlines: bool = False,
+    gridlines: bool = True,
     extend: Optional[str] = None,
     **getvar_kwargs,
 ):
@@ -537,9 +537,15 @@ def plot_field(
             pass
 
     if is_geo and gridlines:
-        gl = ax.gridlines(draw_labels=True, linewidth=0, alpha=0)
+        gl = ax.gridlines(
+            draw_labels=True, linewidth=0.3, alpha=0.3,
+            linestyle=":", color="#999999",
+            x_inline=False, y_inline=False,
+        )
         gl.top_labels = False
         gl.right_labels = False
+        gl.xlabel_style = {"size": 8, "color": "#555555"}
+        gl.ylabel_style = {"size": 8, "color": "#555555"}
 
     # Auto-zoom to domain extent
     if is_geo:
@@ -600,7 +606,7 @@ def plot_wind(
     units: Optional[str] = None,
     title: Optional[str] = None,
     borders: bool = True,
-    gridlines: bool = False,
+    gridlines: bool = True,
     colorbar: bool = True,
     **getvar_kwargs,
 ):
@@ -1066,7 +1072,7 @@ def panel(
     projection=None,
     suptitle: Optional[str] = None,
     borders: bool = True,
-    gridlines: bool = False,
+    gridlines: bool = True,
     **getvar_kwargs,
 ):
     """Create a multi-panel plot of several variables side by side.
