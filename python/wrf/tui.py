@@ -1,8 +1,8 @@
 """
 wrf-rust Terminal UI.
 
-A clean TUI for browsing WRF files, selecting variables, and exporting
-data to files. No ASCII art. Just a practical file/variable picker.
+Browse WRF files, select variables, then explicitly compute/export/plot.
+Nothing computes until you press a button.
 
 Launch:
     python -m wrf tui [directory_or_file]
@@ -13,14 +13,14 @@ from __future__ import annotations
 import glob
 import os
 import sys
+import time
 
 import numpy as np
 
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.reactive import reactive
+from textual.containers import Vertical
 from textual.widgets import (
     Footer,
     Header,
@@ -29,7 +29,7 @@ from textual.widgets import (
     OptionList,
     Static,
     Button,
-    Checkbox,
+    ProgressBar,
 )
 from textual.widgets.option_list import Option
 
@@ -41,18 +41,15 @@ from rich import box
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _find_wrf_files(path: str) -> list[str]:
-    """Find wrfout files in a directory, or return [path] if it's a file."""
     if os.path.isfile(path):
         return [path]
     files = []
     for pattern in ("wrfout*", "wrfout_*", "*.nc", "*.nc4"):
         files.extend(glob.glob(os.path.join(path, pattern)))
-    # Sort by name (usually sorts by time)
     return sorted(set(files))
 
 
 def _load_wrf(path: str):
-    """Open a WRF file."""
     from wrf import WrfFile
     return WrfFile(path)
 
@@ -60,38 +57,6 @@ def _load_wrf(path: str):
 def _get_var_list() -> list[dict]:
     from wrf import list_variables
     return list_variables()
-
-
-def _compute_stats(wf, varname: str, timeidx: int, units: str | None) -> dict:
-    """Compute a variable and return stats dict."""
-    from wrf import getvar
-    kwargs = {}
-    if units:
-        kwargs["units"] = units
-    data = getvar(wf, varname, timeidx=timeidx, **kwargs)
-    is_3d = data.ndim == 3
-    valid = data[np.isfinite(data)]
-    if len(valid) == 0:
-        return {"shape": data.shape, "is_3d": is_3d, "error": "No valid data"}
-    return {
-        "shape": data.shape,
-        "is_3d": is_3d,
-        "min": float(np.min(valid)),
-        "max": float(np.max(valid)),
-        "mean": float(np.mean(valid)),
-        "std": float(np.std(valid)),
-    }
-
-
-def _export_var(wf, varname: str, timeidx: int, units: str | None, outpath: str) -> str:
-    """Compute a variable and save to .npy file. Returns status message."""
-    from wrf import getvar
-    kwargs = {}
-    if units:
-        kwargs["units"] = units
-    data = getvar(wf, varname, timeidx=timeidx, **kwargs)
-    np.save(outpath, data)
-    return f"Saved {outpath}  {data.shape}  {data.dtype}"
 
 
 # ── App ──────────────────────────────────────────────────────────────────────
@@ -107,47 +72,16 @@ class WrfTui(App):
         grid-gutter: 1;
     }
 
-    #files-panel {
-        height: 100%;
-        padding: 0 1;
-    }
-
-    #vars-panel {
-        height: 100%;
-        padding: 0 1;
-    }
-
-    #detail-panel {
-        height: 100%;
-        padding: 0 1;
-    }
+    #files-panel { height: 100%; padding: 0 1; }
+    #vars-panel  { height: 100%; padding: 0 1; }
+    #action-panel { height: 100%; padding: 0 1; }
 
     #file-list { height: 1fr; }
-    #var-list { height: 1fr; }
-    #var-filter { margin-bottom: 1; }
-    #file-filter { margin-bottom: 1; }
+    #var-list  { height: 1fr; }
+    #file-info { height: auto; margin-bottom: 1; }
+    #var-detail { height: auto; margin-bottom: 1; }
 
-    #file-info {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    #var-detail {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    #action-bar {
-        height: auto;
-        padding: 1;
-        margin-top: 1;
-    }
-
-    #export-status {
-        height: auto;
-        margin-top: 1;
-        color: $success;
-    }
+    #selected-list { height: 1fr; margin-bottom: 1; }
 
     .panel-title {
         text-style: bold;
@@ -155,17 +89,31 @@ class WrfTui(App):
         color: $accent;
     }
 
-    #selected-list {
-        height: 1fr;
+    #progress-bar {
+        height: auto;
+        margin: 1 0;
+    }
+
+    #progress-label {
+        height: auto;
+        color: $text-muted;
+    }
+
+    #output-log {
+        height: auto;
+        max-height: 12;
+        overflow-y: auto;
         margin-top: 1;
+    }
+
+    .action-btn {
+        margin-bottom: 1;
+        width: 100%;
     }
     """
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("e", "export_selected", "Export"),
-        Binding("s", "show_stats", "Stats"),
-        Binding("p", "plot_selected", "Plot"),
         Binding("a", "select_all", "Select all"),
         Binding("c", "clear_selected", "Clear"),
     ]
@@ -190,23 +138,23 @@ class WrfTui(App):
             yield OptionList(id="file-list")
             yield Static(id="file-info")
 
-        # Center: variable selector
+        # Center: variable picker
         with Vertical(id="vars-panel"):
-            yield Label("[bold]Variables[/bold]", classes="panel-title")
+            yield Label("[bold]Variables[/bold]  [dim]Enter = toggle select[/dim]", classes="panel-title")
             yield Input(placeholder="Filter variables...", id="var-filter")
             yield OptionList(id="var-list")
-
-        # Right: detail + actions
-        with Vertical(id="detail-panel"):
-            yield Label("[bold]Detail[/bold]", classes="panel-title")
             yield Static(id="var-detail")
-            yield Label("[bold]Selected[/bold]  [dim](space to toggle)[/dim]", classes="panel-title")
+
+        # Right: selected + actions
+        with Vertical(id="action-panel"):
+            yield Label("[bold]Selected[/bold]", classes="panel-title")
             yield OptionList(id="selected-list")
-            with Vertical(id="action-bar"):
-                yield Button("Export selected to .npy", id="btn-export", variant="primary")
-                yield Button("Plot selected to .png", id="btn-plot", variant="default")
-                yield Button("Print stats", id="btn-stats", variant="default")
-            yield Static(id="export-status")
+            yield Button("Export to .npy", id="btn-export", variant="primary", classes="action-btn")
+            yield Button("Plot to .png", id="btn-plot", variant="default", classes="action-btn")
+            yield Button("Compute stats", id="btn-stats", variant="default", classes="action-btn")
+            yield Label("", id="progress-label")
+            yield ProgressBar(id="progress-bar", total=100, show_eta=False)
+            yield Static(id="output-log")
 
         yield Footer()
 
@@ -214,27 +162,28 @@ class WrfTui(App):
         self.all_vars = _get_var_list()
         self._populate_var_list(self.all_vars)
         self._scan_files(self.start_path)
+        self._refresh_selected_list()
+        # Hide progress bar initially
+        self.query_one("#progress-bar", ProgressBar).update(total=100, progress=0)
 
     # ── File list ──
 
     def _scan_files(self, path: str) -> None:
-        files = _find_wrf_files(path)
         file_list = self.query_one("#file-list", OptionList)
         file_list.clear_options()
+        files = _find_wrf_files(path)
         if not files:
             file_list.add_option(Option("[dim]No WRF files found[/dim]", id="__none__"))
             return
         for f in files:
-            name = os.path.basename(f)
-            file_list.add_option(Option(name, id=f))
+            file_list.add_option(Option(os.path.basename(f), id=f))
 
     @on(Input.Changed, "#file-filter")
     def _on_file_filter(self, event: Input.Changed) -> None:
         q = event.value.lower().strip()
         file_list = self.query_one("#file-list", OptionList)
-        files = _find_wrf_files(self.start_path)
         file_list.clear_options()
-        for f in files:
+        for f in _find_wrf_files(self.start_path):
             name = os.path.basename(f)
             if q and q not in name.lower():
                 continue
@@ -244,11 +193,11 @@ class WrfTui(App):
     def _on_file_select(self, event: OptionList.OptionSelected) -> None:
         if not event.option or event.option.id == "__none__":
             return
-        path = str(event.option.id)
-        self._load_file(path)
+        self._load_file(str(event.option.id))
 
     @work(thread=True)
     def _load_file(self, path: str) -> None:
+        self.call_from_thread(self._set_progress_label, f"Loading {os.path.basename(path)}...")
         try:
             wf = _load_wrf(path)
             self.wf = wf
@@ -259,33 +208,38 @@ class WrfTui(App):
             except Exception:
                 times = []
 
-            info_tbl = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
-            info_tbl.add_column("", style="bold cyan", width=8)
-            info_tbl.add_column("")
-            info_tbl.add_row("Grid", f"{wf.nx} x {wf.ny} x {wf.nz}")
-            info_tbl.add_row("Times", str(wf.nt))
-            info_tbl.add_row("dx", f"{wf.dx:g} m")
+            tbl = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
+            tbl.add_column("", style="bold cyan", width=8)
+            tbl.add_column("")
+            tbl.add_row("Grid", f"{wf.nx} x {wf.ny} x {wf.nz}")
+            tbl.add_row("Times", str(wf.nt))
+            tbl.add_row("dx", f"{wf.dx:g} m")
             if times:
-                info_tbl.add_row("Start", times[0])
+                tbl.add_row("Start", times[0])
                 if len(times) > 1:
-                    info_tbl.add_row("End", times[-1])
+                    tbl.add_row("End", times[-1])
 
-            panel = Panel(info_tbl, title=os.path.basename(path), border_style="green")
             self.call_from_thread(
-                self.query_one("#file-info", Static).update, panel
+                self.query_one("#file-info", Static).update,
+                Panel(tbl, title=os.path.basename(path), border_style="green"),
             )
             self.call_from_thread(self._set_subtitle, os.path.basename(path))
+            self.call_from_thread(self._set_progress_label, f"Loaded {os.path.basename(path)}")
 
         except Exception as e:
             self.call_from_thread(
                 self.query_one("#file-info", Static).update,
                 Panel(f"[red]{e}[/red]", title="Error", border_style="red"),
             )
+            self.call_from_thread(self._set_progress_label, "")
 
     def _set_subtitle(self, text: str) -> None:
         self.sub_title = text
 
-    # ── Variable list ──
+    def _set_progress_label(self, text: str) -> None:
+        self.query_one("#progress-label", Label).update(text)
+
+    # ── Variable list (just browse + toggle, NO computation) ──
 
     def _populate_var_list(self, vars_list: list[dict]) -> None:
         var_list = self.query_one("#var-list", OptionList)
@@ -310,28 +264,22 @@ class WrfTui(App):
 
     @on(OptionList.OptionHighlighted, "#var-list")
     def _on_var_highlight(self, event: OptionList.OptionHighlighted) -> None:
+        """Just show metadata. Zero computation."""
         if not event.option or not event.option.id:
             return
         varname = str(event.option.id)
         info = next((v for v in self.all_vars if v["name"] == varname), None)
         if not info:
             return
-
         detail = self.query_one("#var-detail", Static)
-        tbl = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
-        tbl.add_column("", style="bold cyan", width=12)
-        tbl.add_column("")
-        tbl.add_row("Name", f"[bold]{info['name']}[/bold]")
-        tbl.add_row("Description", info["description"])
-        tbl.add_row("Units", info["units"])
-        if self.wf:
-            tbl.add_row("", "[dim]Press Enter to select, s for stats[/dim]")
-
-        detail.update(Panel(tbl, title=varname, border_style="blue"))
+        detail.update(Panel(
+            f"[bold]{info['name']}[/bold]\n{info['description']}\nUnits: {info['units']}",
+            border_style="blue",
+        ))
 
     @on(OptionList.OptionSelected, "#var-list")
-    def _on_var_select(self, event: OptionList.OptionSelected) -> None:
-        """Toggle variable selection on Enter/click."""
+    def _on_var_toggle(self, event: OptionList.OptionSelected) -> None:
+        """Toggle checkmark. Zero computation."""
         if not event.option or not event.option.id:
             return
         varname = str(event.option.id)
@@ -342,8 +290,18 @@ class WrfTui(App):
         self._refresh_var_marks()
         self._refresh_selected_list()
 
+    @on(OptionList.OptionSelected, "#selected-list")
+    def _on_deselect(self, event: OptionList.OptionSelected) -> None:
+        """Remove from selected list on click."""
+        if not event.option or event.option.id == "__none__":
+            return
+        varname = str(event.option.id)
+        if varname in self.selected_vars:
+            self.selected_vars.remove(varname)
+            self._refresh_var_marks()
+            self._refresh_selected_list()
+
     def _refresh_var_marks(self) -> None:
-        """Refresh the variable list to show selection checkmarks."""
         q = self.query_one("#var-filter", Input).value.lower().strip()
         if q:
             filtered = [
@@ -365,92 +323,115 @@ class WrfTui(App):
             units = info["units"] if info else ""
             sel_list.add_option(Option(f"{name}  [dim]{units}[/dim]", id=name))
 
-    # ── Actions ──
-
-    @on(Button.Pressed, "#btn-export")
-    def _on_export(self) -> None:
-        self.action_export_selected()
-
-    @on(Button.Pressed, "#btn-plot")
-    def _on_plot(self) -> None:
-        self.action_plot_selected()
-
-    @on(Button.Pressed, "#btn-stats")
-    def _on_stats_btn(self) -> None:
-        self.action_show_stats()
-
     def action_select_all(self) -> None:
         self.selected_vars = [v["name"] for v in self.all_vars]
         self._refresh_var_marks()
         self._refresh_selected_list()
-        self.notify(f"Selected all {len(self.selected_vars)} variables")
+        self.notify(f"Selected {len(self.selected_vars)} variables")
 
     def action_clear_selected(self) -> None:
         self.selected_vars.clear()
         self._refresh_var_marks()
         self._refresh_selected_list()
-        self.notify("Cleared selection")
+        self.notify("Cleared")
+
+    # ── Actions (only compute when button is pressed) ──
+
+    def _pre_action_check(self) -> bool:
+        if not self.wf:
+            self.notify("Open a file first", severity="warning")
+            return False
+        if not self.selected_vars:
+            self.notify("Select variables first", severity="warning")
+            return False
+        return True
+
+    @on(Button.Pressed, "#btn-export")
+    def _on_export(self) -> None:
+        if self._pre_action_check():
+            self._run_export()
+
+    @on(Button.Pressed, "#btn-plot")
+    def _on_plot(self) -> None:
+        if self._pre_action_check():
+            self._run_plot()
+
+    @on(Button.Pressed, "#btn-stats")
+    def _on_stats(self) -> None:
+        if self._pre_action_check():
+            self._run_stats()
 
     @work(thread=True)
-    def action_export_selected(self) -> None:
-        if not self.wf or not self.selected_vars:
-            self.call_from_thread(self.notify, "Select a file and variables first", severity="warning")
-            return
-
-        status = self.query_one("#export-status", Static)
+    def _run_export(self) -> None:
+        from wrf import getvar
         outdir = os.path.dirname(self.wf_path) if self.wf_path else "."
-        messages = []
+        total = len(self.selected_vars)
+        log_lines = []
 
-        for varname in self.selected_vars:
+        self.call_from_thread(self._reset_progress, total)
+
+        for i, varname in enumerate(self.selected_vars):
+            self.call_from_thread(self._set_progress_label,
+                                  f"Exporting {varname}  ({i+1}/{total})")
             outpath = os.path.join(outdir, f"{varname}.npy")
             try:
-                msg = _export_var(self.wf, varname, 0, None, outpath)
-                messages.append(f"[green]\u2713[/green] {msg}")
+                data = getvar(self.wf, varname, timeidx=0)
+                np.save(outpath, data)
+                log_lines.append(f"[green]\u2713[/green] {varname}  {data.shape}  -> {os.path.basename(outpath)}")
             except Exception as e:
-                messages.append(f"[red]\u2717[/red] {varname}: {e}")
+                log_lines.append(f"[red]\u2717[/red] {varname}: {e}")
 
-        self.call_from_thread(status.update, "\n".join(messages))
-        self.call_from_thread(self.notify, f"Exported {len(self.selected_vars)} variables to {outdir}")
+            self.call_from_thread(self._advance_progress, i + 1, total)
+
+        self.call_from_thread(self._set_progress_label,
+                              f"Done - exported {total} variables to {outdir}")
+        self.call_from_thread(self._set_log, "\n".join(log_lines))
+        self.call_from_thread(self.notify, f"Exported {total} variables")
 
     @work(thread=True)
-    def action_plot_selected(self) -> None:
-        if not self.wf or not self.selected_vars:
-            self.call_from_thread(self.notify, "Select a file and variables first", severity="warning")
-            return
-
-        status = self.query_one("#export-status", Static)
-        outdir = os.path.dirname(self.wf_path) if self.wf_path else "."
-        messages = []
-
+    def _run_plot(self) -> None:
         try:
             from wrf.plot import plot_field
             import matplotlib
             matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
         except ImportError:
             self.call_from_thread(self.notify, "matplotlib not installed", severity="error")
             return
 
-        for varname in self.selected_vars:
+        outdir = os.path.dirname(self.wf_path) if self.wf_path else "."
+        total = len(self.selected_vars)
+        log_lines = []
+
+        self.call_from_thread(self._reset_progress, total)
+
+        for i, varname in enumerate(self.selected_vars):
+            self.call_from_thread(self._set_progress_label,
+                                  f"Plotting {varname}  ({i+1}/{total})")
             outpath = os.path.join(outdir, f"{varname}.png")
             try:
                 fig, _ = plot_field(self.wf, varname, timeidx=0)
                 fig.savefig(outpath, dpi=150, bbox_inches="tight")
-                import matplotlib.pyplot as plt
                 plt.close(fig)
-                messages.append(f"[green]\u2713[/green] {outpath}")
+                log_lines.append(f"[green]\u2713[/green] {varname}  -> {os.path.basename(outpath)}")
             except Exception as e:
-                messages.append(f"[red]\u2717[/red] {varname}: {e}")
+                log_lines.append(f"[red]\u2717[/red] {varname}: {e}")
 
-        self.call_from_thread(status.update, "\n".join(messages))
-        self.call_from_thread(self.notify, f"Plotted {len(self.selected_vars)} variables to {outdir}")
+            self.call_from_thread(self._advance_progress, i + 1, total)
+
+        self.call_from_thread(self._set_progress_label,
+                              f"Done - plotted {total} variables to {outdir}")
+        self.call_from_thread(self._set_log, "\n".join(log_lines))
+        self.call_from_thread(self.notify, f"Plotted {total} variables")
 
     @work(thread=True)
-    def action_show_stats(self) -> None:
-        if not self.wf or not self.selected_vars:
-            self.call_from_thread(self.notify, "Select a file and variables first", severity="warning")
-            return
+    def _run_stats(self) -> None:
+        from wrf import getvar
+        total = len(self.selected_vars)
 
-        tbl = Table(title="Variable Statistics", box=box.ROUNDED, padding=(0, 1))
+        self.call_from_thread(self._reset_progress, total)
+
+        tbl = Table(box=box.ROUNDED, padding=(0, 1))
         tbl.add_column("Variable", style="bold")
         tbl.add_column("Shape")
         tbl.add_column("Min", justify="right")
@@ -459,28 +440,48 @@ class WrfTui(App):
         tbl.add_column("Std", justify="right")
         tbl.add_column("Units", style="dim")
 
-        for varname in self.selected_vars:
+        for i, varname in enumerate(self.selected_vars):
+            self.call_from_thread(self._set_progress_label,
+                                  f"Computing {varname}  ({i+1}/{total})")
             info = next((v for v in self.all_vars if v["name"] == varname), None)
             units = info["units"] if info else ""
             try:
-                stats = _compute_stats(self.wf, varname, 0, None)
-                if "error" not in stats:
+                data = getvar(self.wf, varname, timeidx=0)
+                valid = data[np.isfinite(data)]
+                if len(valid) > 0:
                     tbl.add_row(
                         varname,
-                        str(stats["shape"]),
-                        f"{stats['min']:.4g}",
-                        f"{stats['max']:.4g}",
-                        f"{stats['mean']:.4g}",
-                        f"{stats['std']:.4g}",
+                        "x".join(str(d) for d in data.shape),
+                        f"{valid.min():.4g}",
+                        f"{valid.max():.4g}",
+                        f"{valid.mean():.4g}",
+                        f"{valid.std():.4g}",
                         units,
                     )
                 else:
-                    tbl.add_row(varname, str(stats["shape"]), "", "", "", "", f"[red]{stats['error']}[/red]")
+                    tbl.add_row(varname, "x".join(str(d) for d in data.shape),
+                                "", "", "", "", "[dim]no valid data[/dim]")
             except Exception as e:
                 tbl.add_row(varname, "", "", "", "", "", f"[red]{e}[/red]")
 
-        status = self.query_one("#export-status", Static)
-        self.call_from_thread(status.update, tbl)
+            self.call_from_thread(self._advance_progress, i + 1, total)
+
+        self.call_from_thread(self._set_progress_label, f"Done - {total} variables")
+        self.call_from_thread(self._set_log, tbl)
+
+    # ── Progress helpers ──
+
+    def _reset_progress(self, total: int) -> None:
+        pb = self.query_one("#progress-bar", ProgressBar)
+        pb.update(total=total, progress=0)
+        self.query_one("#output-log", Static).update("")
+
+    def _advance_progress(self, current: int, total: int) -> None:
+        pb = self.query_one("#progress-bar", ProgressBar)
+        pb.update(total=total, progress=current)
+
+    def _set_log(self, content) -> None:
+        self.query_one("#output-log", Static).update(content)
 
 
 def main():
