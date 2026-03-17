@@ -9,83 +9,24 @@ use crate::file::WrfFile;
 
 /// 700-500 hPa lapse rate (°C/km). `[ny, nx]`
 ///
-/// Uses pressure-based interpolation at 700 and 500 hPa levels.
-pub fn compute_lapse_rate_700_500(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    let tc = f.temperature_c(t)?;
-    let h_agl = f.height_agl(t)?;
-    let pres_hpa = f.pressure_hpa(t)?;
-
-    let nx = f.nx;
-    let ny = f.ny;
-    let nz = f.nz;
-    let nxy = nx * ny;
-
-    let mut lr = vec![0.0f64; nxy];
-    lr.par_iter_mut().enumerate().for_each(|(ij, lr_val)| {
-        // Interpolate temperature and height at 700 hPa and 500 hPa
-        let interp_at_p = |target_p: f64| -> (f64, f64) {
-            for k in 0..nz - 1 {
-                let idx0 = k * nxy + ij;
-                let idx1 = (k + 1) * nxy + ij;
-                let p0 = pres_hpa[idx0];
-                let p1 = pres_hpa[idx1];
-                if p0 >= target_p && p1 < target_p {
-                    let frac = (target_p - p1) / (p0 - p1);
-                    let t_interp = tc[idx1] + frac * (tc[idx0] - tc[idx1]);
-                    let h_interp = h_agl[idx1] + frac * (h_agl[idx0] - h_agl[idx1]);
-                    return (t_interp, h_interp);
-                }
-            }
-            // Fallback: nearest level
-            (tc[ij], h_agl[ij])
-        };
-
-        let (t_700, h_700) = interp_at_p(700.0);
-        let (t_500, h_500) = interp_at_p(500.0);
-        let depth_km = (h_500 - h_700).abs() / 1000.0;
-        if depth_km > 0.01 {
-            *lr_val = -(t_500 - t_700) / depth_km;
-        }
-    });
-
-    Ok(lr)
+/// Delegates to the generic compute_lapse_rate with pressure bounds.
+/// Supports use_virtual and lake_interp via opts.
+pub fn compute_lapse_rate_700_500(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
+    let mut lr_opts = opts.clone();
+    lr_opts.bottom_p = Some(700.0);
+    lr_opts.top_p = Some(500.0);
+    compute_lapse_rate(f, t, &lr_opts)
 }
 
 /// 0-3 km AGL lapse rate (°C/km). `[ny, nx]`
-pub fn compute_lapse_rate_0_3km(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    let tc = f.temperature_c(t)?;
-    let h_agl = f.height_agl(t)?;
-
-    let nx = f.nx;
-    let ny = f.ny;
-    let nz = f.nz;
-    let nxy = nx * ny;
-
-    let mut lr = vec![0.0f64; nxy];
-    lr.par_iter_mut().enumerate().for_each(|(ij, lr_val)| {
-        // Find temperature at surface and at 3km AGL
-        let t_sfc = tc[ij]; // k=0
-        let mut t_3km = t_sfc;
-        let _h_sfc = h_agl[ij];
-
-        for k in 1..nz {
-            let idx = k * nxy + ij;
-            let h = h_agl[idx];
-            if h >= 3000.0 {
-                // Interpolate
-                let idx_prev = (k - 1) * nxy + ij;
-                let h_prev = h_agl[idx_prev];
-                let frac = (3000.0 - h_prev) / (h - h_prev);
-                t_3km = tc[idx_prev] + frac * (tc[idx] - tc[idx_prev]);
-                break;
-            }
-        }
-
-        // Lapse rate = -(T_3km - T_sfc) / 3.0 in °C/km
-        *lr_val = -(t_3km - t_sfc) / 3.0;
-    });
-
-    Ok(lr)
+///
+/// Delegates to the generic compute_lapse_rate with height bounds.
+/// Uses T2 at surface, supports use_virtual and lake_interp via opts.
+pub fn compute_lapse_rate_0_3km(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
+    let mut lr_opts = opts.clone();
+    lr_opts.bottom_m = Some(0.0);
+    lr_opts.top_m = Some(3000.0);
+    compute_lapse_rate(f, t, &lr_opts)
 }
 
 /// Freezing level height AGL (m). `[ny, nx]`

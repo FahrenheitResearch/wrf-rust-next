@@ -240,51 +240,86 @@ pub fn compute_critical_angle(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfR
 }
 
 /// Significant Hail Parameter (dimensionless). `[ny, nx]`
+/// Significant Hail Parameter (dimensionless). `[ny, nx]`
+///
+/// Full SHIP formula (per SPC):
+///   SHIP = (MUCAPE * MR_500 * LR_700_500 * (-T500) * SHEAR_0_6km) / 42000000
+///
+/// Where:
+///   MUCAPE = most-unstable CAPE (J/kg)
+///   MR_500 = mixing ratio at 500 hPa (g/kg)
+///   LR_700_500 = 700-500 hPa lapse rate (degC/km)
+///   T500 = temperature at 500 hPa (degC, typically negative)
+///   SHEAR_0_6km = 0-6 km bulk wind shear magnitude (m/s)
 pub fn compute_ship(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let pres = f.full_pressure(t)?;
     let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
-    let psfc = f.psfc(t)?;   // Pa -- compute_cape_cin converts internally
-    let t2 = f.t2_for_opts(t, opts)?;       // K  -- compute_cape_cin converts internally
+    let psfc = f.psfc(t)?;
+    let t2 = f.t2_for_opts(t, opts)?;
     let q2 = f.q2_for_opts(t, opts)?;
+    let u = f.u_destag(t)?;
+    let v = f.v_destag(t)?;
 
     let nx = f.nx;
     let ny = f.ny;
     let nz = f.nz;
     let nxy = nx * ny;
 
-    // Pass raw Pa/K values -- compute_cape_cin converts internally
+    // MUCAPE
     let (mucape, _, _, _) = crate::met::composite::compute_cape_cin(
         &pres, &tc, &qv, &h_agl, &psfc, &t2, &q2,
         nx, ny, nz, "mu",
     );
 
-    // SHIP needs MUCAPE, column-integrated water, and T500
-    // Find T at ~500 hPa for each column
-    let mut t500 = vec![0.0f64; nxy];
-    t500.par_iter_mut().enumerate().for_each(|(ij, t500_val)| {
-        for k in 0..nz - 1 {
-            let idx = k * nxy + ij;
-            let idx1 = (k + 1) * nxy + ij;
-            if pres_hpa[idx] >= 500.0 && pres_hpa[idx1] < 500.0 {
-                let frac = (500.0 - pres_hpa[idx1]) / (pres_hpa[idx] - pres_hpa[idx1]);
-                *t500_val = tc[idx1] + frac * (tc[idx] - tc[idx1]);
-                break;
-            }
-        }
-    });
+    // 0-6 km shear
+    let shear6 = crate::met::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
 
-    // Simple SHIP approximation: MUCAPE * |mixing_ratio| * lapse_rate * (-T500) * shear / denom
-    // Simplified SHIP version
+    // 700-500 hPa lapse rate
+    let lr_opts = {
+        let mut o = opts.clone();
+        o.bottom_p = Some(700.0);
+        o.top_p = Some(500.0);
+        o
+    };
+    let lr_700_500 = crate::diag::extra::compute_lapse_rate(f, t, &lr_opts)?;
+
+    // T500 and MR_500: interpolate per column
+    let mut t500 = vec![0.0f64; nxy];
+    let mut mr500 = vec![0.0f64; nxy];
+    t500.par_iter_mut()
+        .zip(mr500.par_iter_mut())
+        .enumerate()
+        .for_each(|(ij, (t500_val, mr500_val))| {
+            for k in 0..nz - 1 {
+                let idx = k * nxy + ij;
+                let idx1 = (k + 1) * nxy + ij;
+                if pres_hpa[idx] >= 500.0 && pres_hpa[idx1] < 500.0 {
+                    let frac = (500.0 - pres_hpa[idx1]) / (pres_hpa[idx] - pres_hpa[idx1]);
+                    *t500_val = tc[idx1] + frac * (tc[idx] - tc[idx1]);
+                    // Mixing ratio at 500 hPa in g/kg
+                    let q_interp = qv[idx1] + frac * (qv[idx] - qv[idx1]);
+                    *mr500_val = q_interp.max(0.0) * 1000.0; // kg/kg -> g/kg
+                    break;
+                }
+            }
+        });
+
+    // SHIP = (MUCAPE * MR_500 * LR * (-T500) * SHEAR) / 42000000
     Ok(mucape
         .par_iter()
+        .zip(mr500.par_iter())
+        .zip(lr_700_500.par_iter())
         .zip(t500.par_iter())
-        .map(|(cape, t5)| {
-            // Simplified SHIP
-            let t500_factor = (-t5).max(0.0) / 30.0;
-            (cape / 1500.0 * t500_factor).max(0.0)
+        .zip(shear6.par_iter())
+        .map(|((((cape, mr), lr), t5), shr)| {
+            if *cape <= 0.0 {
+                return 0.0;
+            }
+            let result = (cape * mr * lr * (-t5).max(0.0) * shr) / 42_000_000.0;
+            result.max(0.0)
         })
         .collect())
 }
