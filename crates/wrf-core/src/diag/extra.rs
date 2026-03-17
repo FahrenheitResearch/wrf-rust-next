@@ -18,7 +18,7 @@ pub fn compute_lapse_rate_700_500(f: &WrfFile, t: usize, _opts: &ComputeOpts) ->
     let ny = f.ny;
     let nz = f.nz;
 
-    Ok(wx_math::composite::compute_lapse_rate(
+    Ok(crate::met::composite::compute_lapse_rate(
         &tc, &qv, &h_agl, nx, ny, nz, 700.0, 500.0,
     ))
 }
@@ -112,7 +112,7 @@ pub fn compute_wet_bulb_0(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResu
             let ln_e = (e / 6.112).max(1e-10).ln();
             let td_c = (243.5 * ln_e) / (17.67 - ln_e);
 
-            let twb = wx_math::thermo::wet_bulb_temperature(p_hpa[idx], tc[idx], td_c);
+            let twb = crate::met::thermo::wet_bulb_temperature(p_hpa[idx], tc[idx], td_c);
 
             if k > 0 && prev_twb >= 0.0 && twb < 0.0 {
                 let frac = (0.0 - prev_twb) / (twb - prev_twb);
@@ -142,7 +142,7 @@ pub fn compute_theta_w(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
             let e = q * p / (0.622 + q);
             let ln_e = (e / 6.112).max(1e-10).ln();
             let td_c = (243.5 * ln_e) / (17.67 - ln_e);
-            wx_math::thermo::wet_bulb_potential_temperature(*p, *t_c, td_c) + 273.15
+            crate::met::thermo::wet_bulb_potential_temperature(*p, *t_c, td_c) + 273.15
         })
         .collect())
 }
@@ -171,7 +171,7 @@ pub fn compute_fosberg(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
             let rh = (e / es * 100.0).clamp(0.0, 100.0);
             let wspd_mph = (u10[ij].powi(2) + v10[ij].powi(2)).sqrt() / 0.44704;
 
-            wx_math::composite::fosberg_fire_weather_index(t_f, rh, wspd_mph)
+            crate::met::composite::fosberg_fire_weather_index(t_f, rh, wspd_mph)
         })
         .collect())
 }
@@ -216,7 +216,7 @@ pub fn compute_haines(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<V
             }
         }
 
-        *h_val = wx_math::composite::haines_index(t950, t850, td850) as f64;
+        *h_val = crate::met::composite::haines_index(t950, t850, td850) as f64;
     });
 
     Ok(haines)
@@ -246,7 +246,7 @@ pub fn compute_hdw(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
             // VPD = es - e (in hPa)
             let vpd = (es - e).max(0.0);
 
-            wx_math::composite::hot_dry_windy(t_c, rh, wspd_ms, vpd)
+            crate::met::composite::hot_dry_windy(t_c, rh, wspd_ms, vpd)
         })
         .collect())
 }

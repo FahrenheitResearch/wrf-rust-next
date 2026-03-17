@@ -31,7 +31,7 @@ pub fn compute_avo(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
         let v_plane = &v[k * nxy..(k + 1) * nxy];
 
         // Compute relative vorticity using central differences
-        let rel_vort = wx_math::dynamics::vorticity(v_plane, u_plane, nx, ny, dx, dy);
+        let rel_vort = crate::met::dynamics::vorticity(v_plane, u_plane, nx, ny, dx, dy);
 
         for ij in 0..nxy {
             let f_cor = 2.0 * OMEGA * (lat[ij].to_radians()).sin();
@@ -67,7 +67,7 @@ pub fn compute_pvo(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
         let u_plane = &u[k * nxy..(k + 1) * nxy];
         let v_plane = &v[k * nxy..(k + 1) * nxy];
 
-        let rel_vort = wx_math::dynamics::vorticity(v_plane, u_plane, nx, ny, dx, dy);
+        let rel_vort = crate::met::dynamics::vorticity(v_plane, u_plane, nx, ny, dx, dy);
 
         for ij in 0..nxy {
             let f_cor = 2.0 * OMEGA * (lat[ij].to_radians()).sin();

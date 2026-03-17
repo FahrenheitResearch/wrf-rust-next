@@ -16,7 +16,7 @@ pub fn compute_pw(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f
     let ny = f.ny;
     let nz = f.nz;
 
-    Ok(wx_math::composite::compute_pw(&qv, &pres, nx, ny, nz))
+    Ok(crate::met::composite::compute_pw(&qv, &pres, nx, ny, nz))
 }
 
 /// 2-m relative humidity (%). `[ny, nx]`

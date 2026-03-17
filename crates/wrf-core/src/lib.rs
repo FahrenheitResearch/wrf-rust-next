@@ -8,6 +8,7 @@ pub mod variables;
 pub mod compute;
 pub mod multi;
 pub mod diag;
+pub mod met;
 
 #[cfg(feature = "pure-rust-reader")]
 pub mod hdf5_reader;

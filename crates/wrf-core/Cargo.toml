@@ -10,8 +10,6 @@ netcdf-backend = ["dep:netcdf"]
 pure-rust-reader = ["dep:flate2"]
 
 [dependencies]
-wx-math = { path = "C:/Users/drew/rustmet/crates/wx-math" }
-metrust = { path = "C:/Users/drew/metrust" }
 netcdf = { version = "0.12", optional = true }
 ndarray = "0.16"
 rayon = "1"

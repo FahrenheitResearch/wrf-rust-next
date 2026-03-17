@@ -32,7 +32,7 @@ pub fn compute_uhel(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<
     vort_3d.par_chunks_mut(nxy).enumerate().for_each(|(k, plane)| {
         let u_plane = &u[k * nxy..(k + 1) * nxy];
         let v_plane = &v[k * nxy..(k + 1) * nxy];
-        let vort = wx_math::dynamics::vorticity(v_plane, u_plane, nx, ny, dx, dy);
+        let vort = crate::met::dynamics::vorticity(v_plane, u_plane, nx, ny, dx, dy);
         plane.copy_from_slice(&vort);
     });
 

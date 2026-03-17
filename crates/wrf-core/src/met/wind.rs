@@ -1,0 +1,338 @@
+//! Wind calculations for vertical profiles.
+//!
+//! Profile-based calculations (shear, helicity, storm motion)
+//! that operate on sounding data rather than 2-D grids.
+//!
+//! Vendored from metrust crate for self-contained builds.
+
+use std::f64::consts::PI;
+
+// Helpers
+
+/// Linearly interpolate a value at `target_h` from a height-sorted profile.
+///
+/// Returns `None` if `target_h` is outside the profile range.
+fn interp_at_height(profile: &[f64], heights: &[f64], target_h: f64) -> Option<f64> {
+    debug_assert_eq!(profile.len(), heights.len());
+    let n = heights.len();
+    if n == 0 {
+        return None;
+    }
+    if target_h <= heights[0] {
+        return Some(profile[0]);
+    }
+    if target_h >= heights[n - 1] {
+        return Some(profile[n - 1]);
+    }
+    for i in 1..n {
+        if heights[i] >= target_h {
+            let frac = (target_h - heights[i - 1]) / (heights[i] - heights[i - 1]);
+            return Some(profile[i - 1] + frac * (profile[i] - profile[i - 1]));
+        }
+    }
+    None
+}
+
+// Profile-based functions
+
+/// Bulk wind shear between two height levels.
+///
+/// Computes (delta-u, delta-v) = wind(top) - wind(bottom), interpolating to
+/// exact height levels when they fall between profile points.
+///
+/// # Arguments
+/// * `u_prof` -- u-component profile (m/s), ordered by ascending height
+/// * `v_prof` -- v-component profile (m/s)
+/// * `height_prof` -- height AGL profile (m), must be monotonically increasing
+/// * `bottom_m` -- bottom of the shear layer (m AGL)
+/// * `top_m` -- top of the shear layer (m AGL)
+///
+/// # Panics
+/// Panics if slices have mismatched lengths or fewer than 2 levels.
+pub fn bulk_shear(
+    u_prof: &[f64],
+    v_prof: &[f64],
+    height_prof: &[f64],
+    bottom_m: f64,
+    top_m: f64,
+) -> (f64, f64) {
+    assert_eq!(u_prof.len(), v_prof.len());
+    assert_eq!(u_prof.len(), height_prof.len());
+    assert!(u_prof.len() >= 2, "need at least 2 levels");
+
+    let u_bot = interp_at_height(u_prof, height_prof, bottom_m).unwrap();
+    let v_bot = interp_at_height(v_prof, height_prof, bottom_m).unwrap();
+    let u_top = interp_at_height(u_prof, height_prof, top_m).unwrap();
+    let v_top = interp_at_height(v_prof, height_prof, top_m).unwrap();
+
+    (u_top - u_bot, v_top - v_bot)
+}
+
+/// Storm-relative helicity integrated from the surface to `depth_m` AGL.
+///
+/// SRH = integral of (storm-relative wind cross vertical wind shear) dz.
+/// Uses the trapezoidal approximation on the profile segments within the layer.
+///
+/// # Returns
+/// `(positive_srh, negative_srh, total_srh)` where:
+/// - `positive_srh` >= 0 -- sum of positive (cyclonic in NH) contributions
+/// - `negative_srh` <= 0 -- sum of negative (anticyclonic) contributions
+/// - `total_srh` = positive_srh + negative_srh
+///
+/// # Arguments
+/// * `u_prof`, `v_prof` -- wind components (m/s), ascending height
+/// * `height_prof` -- heights AGL (m)
+/// * `depth_m` -- integration depth from surface (m), e.g. 1000.0 or 3000.0
+/// * `storm_u`, `storm_v` -- storm motion components (m/s)
+///
+/// # Panics
+/// Panics on mismatched lengths or fewer than 2 levels.
+pub fn storm_relative_helicity(
+    u_prof: &[f64],
+    v_prof: &[f64],
+    height_prof: &[f64],
+    depth_m: f64,
+    storm_u: f64,
+    storm_v: f64,
+) -> (f64, f64, f64) {
+    let n = u_prof.len();
+    assert_eq!(n, v_prof.len());
+    assert_eq!(n, height_prof.len());
+    assert!(n >= 2, "need at least 2 levels");
+
+    // Build a sub-profile from 0 to depth_m, interpolating endpoints if needed.
+    let mut heights = Vec::new();
+    let mut us = Vec::new();
+    let mut vs = Vec::new();
+
+    // Start at height_prof[0] (surface)
+    let h_start = height_prof[0];
+    let h_end = h_start + depth_m;
+
+    for i in 0..n {
+        if height_prof[i] >= h_start && height_prof[i] <= h_end {
+            heights.push(height_prof[i]);
+            us.push(u_prof[i]);
+            vs.push(v_prof[i]);
+        }
+    }
+
+    // If the top of the layer doesn't exactly match a profile level, interpolate.
+    if let Some(&last_h) = heights.last() {
+        if last_h < h_end {
+            if let (Some(u_top), Some(v_top)) = (
+                interp_at_height(u_prof, height_prof, h_end),
+                interp_at_height(v_prof, height_prof, h_end),
+            ) {
+                heights.push(h_end);
+                us.push(u_top);
+                vs.push(v_top);
+            }
+        }
+    }
+
+    let m = heights.len();
+    if m < 2 {
+        return (0.0, 0.0, 0.0);
+    }
+
+    let mut pos_srh = 0.0;
+    let mut neg_srh = 0.0;
+
+    // SRH via trapezoidal integration of the cross-product:
+    // SRH = sum_i [ (sru[i+1]*srv[i]) - (sru[i]*srv[i+1]) ]
+    for i in 0..(m - 1) {
+        let sru_i = us[i] - storm_u;
+        let srv_i = vs[i] - storm_v;
+        let sru_ip1 = us[i + 1] - storm_u;
+        let srv_ip1 = vs[i + 1] - storm_v;
+
+        // Cross-product contribution (2-D "area" form)
+        // Positive for clockwise-turning (veering) hodographs in the NH.
+        let contrib = (sru_i * srv_ip1) - (sru_ip1 * srv_i);
+
+        if contrib > 0.0 {
+            pos_srh += contrib;
+        } else {
+            neg_srh += contrib;
+        }
+    }
+
+    (pos_srh, neg_srh, pos_srh + neg_srh)
+}
+
+/// Mean wind over a height layer, computed as a height-weighted (trapezoidal)
+/// average of the wind components.
+///
+/// # Arguments
+/// * `u_prof`, `v_prof` -- wind components (m/s), ascending height
+/// * `height_prof` -- heights AGL (m)
+/// * `bottom_m` -- bottom of the layer (m AGL)
+/// * `top_m` -- top of the layer (m AGL)
+///
+/// # Returns
+/// `(mean_u, mean_v)` in m/s.
+///
+/// # Panics
+/// Panics on mismatched lengths or fewer than 2 levels.
+pub fn mean_wind(
+    u_prof: &[f64],
+    v_prof: &[f64],
+    height_prof: &[f64],
+    bottom_m: f64,
+    top_m: f64,
+) -> (f64, f64) {
+    let n = u_prof.len();
+    assert_eq!(n, v_prof.len());
+    assert_eq!(n, height_prof.len());
+    assert!(n >= 2, "need at least 2 levels");
+
+    // Build sub-profile over the layer, interpolating endpoints.
+    let mut heights = Vec::new();
+    let mut us = Vec::new();
+    let mut vs = Vec::new();
+
+    // Interpolate at bottom
+    let u_bot = interp_at_height(u_prof, height_prof, bottom_m).unwrap();
+    let v_bot = interp_at_height(v_prof, height_prof, bottom_m).unwrap();
+    heights.push(bottom_m);
+    us.push(u_bot);
+    vs.push(v_bot);
+
+    // Add interior points within the layer
+    for i in 0..n {
+        if height_prof[i] > bottom_m && height_prof[i] < top_m {
+            heights.push(height_prof[i]);
+            us.push(u_prof[i]);
+            vs.push(v_prof[i]);
+        }
+    }
+
+    // Interpolate at top
+    let u_top = interp_at_height(u_prof, height_prof, top_m).unwrap();
+    let v_top = interp_at_height(v_prof, height_prof, top_m).unwrap();
+    heights.push(top_m);
+    us.push(u_top);
+    vs.push(v_top);
+
+    // Trapezoidal integration
+    let m = heights.len();
+    let mut sum_u = 0.0;
+    let mut sum_v = 0.0;
+    let mut total_dz = 0.0;
+
+    for i in 0..(m - 1) {
+        let dz = heights[i + 1] - heights[i];
+        sum_u += 0.5 * (us[i] + us[i + 1]) * dz;
+        sum_v += 0.5 * (vs[i] + vs[i + 1]) * dz;
+        total_dz += dz;
+    }
+
+    if total_dz.abs() < 1e-10 {
+        return (u_bot, v_bot);
+    }
+
+    (sum_u / total_dz, sum_v / total_dz)
+}
+
+/// Bunkers storm motion estimate using the internal dynamics (ID) method.
+///
+/// Computes right-moving, left-moving, and mean-wind vectors for a supercell
+/// storm motion estimate. Uses the 0-6 km mean wind, 0-6 km bulk shear, and
+/// a 7.5 m/s perpendicular deviation.
+///
+/// # Arguments
+/// * `u_prof`, `v_prof` -- wind components (m/s), ascending height
+/// * `height_prof` -- heights AGL (m)
+///
+/// # Returns
+/// `(right_mover, left_mover, mean_wind)` where each is `(u, v)` in m/s.
+///
+/// # References
+/// Bunkers et al. (2000): Predicting Supercell Motion Using a New Hodograph
+/// Technique. *Wea. Forecasting*, **15**, 61-79.
+pub fn bunkers_storm_motion(
+    u_prof: &[f64],
+    v_prof: &[f64],
+    height_prof: &[f64],
+) -> ((f64, f64), (f64, f64), (f64, f64)) {
+    let deviation = 7.5; // m/s perpendicular offset
+
+    // 0-6 km mean wind
+    let (mw_u, mw_v) = mean_wind(u_prof, v_prof, height_prof, 0.0, 6000.0);
+
+    // 0-6 km bulk shear vector
+    let (shr_u, shr_v) = bulk_shear(u_prof, v_prof, height_prof, 0.0, 6000.0);
+
+    // Normalize the shear vector, then get the perpendicular
+    let shear_mag = (shr_u * shr_u + shr_v * shr_v).sqrt();
+
+    if shear_mag < 1e-10 {
+        // Degenerate case: no shear => storm motion is the mean wind
+        return ((mw_u, mw_v), (mw_u, mw_v), (mw_u, mw_v));
+    }
+
+    // Unit shear vector
+    let shr_u_hat = shr_u / shear_mag;
+    let shr_v_hat = shr_v / shear_mag;
+
+    // Perpendicular (90 deg clockwise rotation for right mover)
+    let perp_u = shr_v_hat;
+    let perp_v = -shr_u_hat;
+
+    let right_u = mw_u + deviation * perp_u;
+    let right_v = mw_v + deviation * perp_v;
+
+    let left_u = mw_u - deviation * perp_u;
+    let left_v = mw_v - deviation * perp_v;
+
+    ((right_u, right_v), (left_u, left_v), (mw_u, mw_v))
+}
+
+/// Critical angle between the storm-relative inflow vector and the 0-500 m
+/// shear vector.
+///
+/// A critical angle near 90 degrees is most favorable for low-level
+/// mesocyclone development because it means the storm-relative inflow is
+/// perpendicular to the low-level shear, maximizing streamwise vorticity
+/// tilting.
+///
+/// # Arguments
+/// * `storm_u`, `storm_v` -- Storm motion components (m/s)
+/// * `u_sfc`, `v_sfc` -- Surface wind components (m/s)
+/// * `u_500m`, `v_500m` -- Wind at 500 m AGL (m/s)
+///
+/// # Returns
+/// The angle in degrees [0, 180] between the two vectors. Returns 0.0 if
+/// either vector has near-zero magnitude.
+///
+/// # References
+/// Esterheld, J. M., and D. J. Giuliano, 2008: Discriminating between
+/// tornadic and non-tornadic supercells: A new hodograph technique.
+pub fn critical_angle(
+    storm_u: f64,
+    storm_v: f64,
+    u_sfc: f64,
+    v_sfc: f64,
+    u_500m: f64,
+    v_500m: f64,
+) -> f64 {
+    // Storm-relative inflow vector (surface wind relative to storm)
+    let inflow_u = u_sfc - storm_u;
+    let inflow_v = v_sfc - storm_v;
+
+    // 0-500 m shear vector
+    let shear_u = u_500m - u_sfc;
+    let shear_v = v_500m - v_sfc;
+
+    let mag_inflow = (inflow_u * inflow_u + inflow_v * inflow_v).sqrt();
+    let mag_shear = (shear_u * shear_u + shear_v * shear_v).sqrt();
+
+    if mag_inflow < 1e-10 || mag_shear < 1e-10 {
+        return 0.0;
+    }
+
+    let cos_angle = (inflow_u * shear_u + inflow_v * shear_v) / (mag_inflow * mag_shear);
+    // Clamp to [-1, 1] to avoid NaN from floating-point rounding
+    cos_angle.clamp(-1.0, 1.0).acos() * (180.0 / PI)
+}

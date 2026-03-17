@@ -1,7 +1,7 @@
 //! CAPE diagnostic variables: sbcape, mlcape, mucape, cape2d, cape3d, lcl, lfc, el
 //!
-//! Uses wx_math::composite::compute_cape_cin() for parallel grid computation
-//! and wx_math::thermo::cape_cin_core() for column-by-column fallback.
+//! Uses crate::met::composite::compute_cape_cin() for parallel grid computation
+//! and crate::met::thermo::cape_cin_core() for column-by-column fallback.
 
 use rayon::prelude::*;
 
@@ -17,7 +17,7 @@ fn compute_cape_fields(
     parcel_type: &str,
     top_m: Option<f64>,
 ) -> WrfResult<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> {
-    let pres = f.full_pressure(t)?; // Pa -> need hPa for wx-math
+    let pres = f.full_pressure(t)?; // Pa -> need hPa for thermo functions
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
@@ -30,16 +30,16 @@ fn compute_cape_fields(
     let nz = f.nz;
     let nxy = nx * ny;
 
-    // Convert pressure from Pa to hPa for wx-math
+    // Convert pressure from Pa to hPa for thermo functions
     let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
     // Convert surface pressure from Pa to hPa
     let psfc_hpa: Vec<f64> = psfc.iter().map(|p| p / 100.0).collect();
     // Convert T2 from K to C
     let t2_c: Vec<f64> = t2.iter().map(|t| t - 273.15).collect();
 
-    // Use wx_math's grid-parallel CAPE computation if no top_m specified
+    // Use crate::met's grid-parallel CAPE computation if no top_m specified
     if top_m.is_none() {
-        let (cape, cin, lcl, lfc) = wx_math::composite::compute_cape_cin(
+        let (cape, cin, lcl, lfc) = crate::met::composite::compute_cape_cin(
             &pres_hpa, &tc, &qv, &h_agl, &psfc_hpa, &t2_c, &q2,
             nx, ny, nz, parcel_type,
         );
@@ -77,7 +77,7 @@ fn compute_cape_fields(
                 h_prof.push(h_agl[idx]);
             }
 
-            let (c, ci, l, lf) = wx_math::thermo::cape_cin_core(
+            let (c, ci, l, lf) = crate::met::thermo::cape_cin_core(
                 &p_prof, &t_prof, &td_prof, &h_prof,
                 psfc_hpa[ij], t2_c[ij], td_prof.first().copied().unwrap_or(0.0),
                 parcel_type, 100.0, 300.0, top_m,
@@ -171,10 +171,10 @@ pub fn compute_el(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f6
             h_prof.push(h_agl[idx]);
         }
 
-        // Use wx_math el function — returns Option<(p_el, t_el)>
-        if let Some((el_pres, _t_el)) = wx_math::thermo::el(&p_prof, &t_prof, &td_prof) {
+        // Use crate::met el function — returns Option<(p_el, t_el)>
+        if let Some((el_pres, _t_el)) = crate::met::thermo::el(&p_prof, &t_prof, &td_prof) {
             if el_pres > 0.0 {
-                *el_v = wx_math::thermo::get_height_at_pres(el_pres, &p_prof, &h_prof);
+                *el_v = crate::met::thermo::get_height_at_pres(el_pres, &p_prof, &h_prof);
             }
         }
     });
@@ -229,7 +229,7 @@ pub fn compute_cape3d(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<V
             }
 
             if p_prof.len() >= 2 {
-                let (c, _, _, _) = wx_math::thermo::cape_cin_core(
+                let (c, _, _, _) = crate::met::thermo::cape_cin_core(
                     &p_prof, &t_prof, &td_prof, &h_prof,
                     p_prof[0], t_prof[0], td_prof[0],
                     "sb", 100.0, 300.0, None,
@@ -293,7 +293,7 @@ fn compute_cape_fields_custom(
             }
 
             // Use "sb" parcel type but pass custom parcel values as psfc/t2m/td2m
-            let (c, ci, l, lf) = wx_math::thermo::cape_cin_core(
+            let (c, ci, l, lf) = crate::met::thermo::cape_cin_core(
                 &p_prof, &t_prof, &td_prof, &h_prof,
                 parcel_p_hpa, parcel_t_c, parcel_td_c,
                 "sb", 100.0, 300.0, top_m,
@@ -366,7 +366,7 @@ pub fn compute_lfc_generic(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResu
 
 /// Generic EL height computation. Same parcel logic as `compute_cape_generic`.
 ///
-/// For custom parcels, column-by-column EL is computed via `wx_math::thermo::el` using the
+/// For custom parcels, column-by-column EL is computed via `crate::met::thermo::el` using the
 /// custom parcel's temperature and dewpoint as the surface values in the profile.
 pub fn compute_el_generic(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     if has_custom_parcel(opts) {
@@ -417,9 +417,9 @@ pub fn compute_el_generic(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
             }
 
             if mod_p.len() >= 2 {
-                if let Some((el_pres, _)) = wx_math::thermo::el(&mod_p, &mod_t, &mod_td) {
+                if let Some((el_pres, _)) = crate::met::thermo::el(&mod_p, &mod_t, &mod_td) {
                     if el_pres > 0.0 {
-                        *el_v = wx_math::thermo::get_height_at_pres(el_pres, &p_prof, &h_prof);
+                        *el_v = crate::met::thermo::get_height_at_pres(el_pres, &p_prof, &h_prof);
                     }
                 }
             }
@@ -491,7 +491,7 @@ pub fn compute_effective_inflow_layer(
             }
 
             // Lift parcel from level k
-            let (c, ci, _, _) = wx_math::thermo::cape_cin_core(
+            let (c, ci, _, _) = crate::met::thermo::cape_cin_core(
                 &p_prof[k..], &t_prof[k..], &td_prof[k..], &h_prof[k..],
                 p_prof[k], t_prof[k], td_prof[k],
                 "sb", 100.0, 300.0, None,
@@ -524,10 +524,10 @@ pub fn compute_effective_inflow_layer(
                 let _mu_h_prof = &h_prof[mu_k..];
 
                 if let Some((el_pres, _)) =
-                    wx_math::thermo::el(mu_p_prof, mu_t_prof, mu_td_prof)
+                    crate::met::thermo::el(mu_p_prof, mu_t_prof, mu_td_prof)
                 {
                     if el_pres > 0.0 {
-                        out[1] = wx_math::thermo::get_height_at_pres(
+                        out[1] = crate::met::thermo::get_height_at_pres(
                             el_pres, &p_prof, &h_prof,
                         );
                     }
@@ -590,7 +590,7 @@ pub fn compute_effective_inflow_cape(
                 break;
             }
 
-            let (c, ci, _, _) = wx_math::thermo::cape_cin_core(
+            let (c, ci, _, _) = crate::met::thermo::cape_cin_core(
                 &p_prof[k..], &t_prof[k..], &td_prof[k..], &h_prof[k..],
                 p_prof[k], t_prof[k], td_prof[k],
                 "sb", 100.0, 300.0, None,

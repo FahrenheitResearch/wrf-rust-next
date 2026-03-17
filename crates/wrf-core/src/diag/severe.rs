@@ -30,16 +30,16 @@ pub fn compute_stp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
 
     // Surface-based CAPE + LCL
-    let (sbcape, _, lcl, _) = wx_math::composite::compute_cape_cin(
+    let (sbcape, _, lcl, _) = crate::met::composite::compute_cape_cin(
         &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
         nx, ny, nz, "sb",
     );
 
     // 0-1 km SRH
-    let srh1 = wx_math::composite::compute_srh(&u, &v, &h_agl, nx, ny, nz, 1000.0);
+    let srh1 = crate::met::composite::compute_srh(&u, &v, &h_agl, nx, ny, nz, 1000.0);
 
     // 0-6 km shear magnitude
-    let shear6 = wx_math::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
+    let shear6 = crate::met::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
 
     Ok(stp_fixed_from_components(&sbcape, &lcl, &srh1, &shear6))
 }
@@ -70,13 +70,13 @@ pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfR
     let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
 
     // Mixed-layer CAPE, CIN, and LCL
-    let (mlcape, mlcin, lcl, _) = wx_math::composite::compute_cape_cin(
+    let (mlcape, mlcin, lcl, _) = crate::met::composite::compute_cape_cin(
         &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
         nx, ny, nz, "ml",
     );
 
     // 0-6 km shear magnitude (EBWD approximation)
-    let shear6 = wx_math::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
+    let shear6 = crate::met::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
 
     // Effective-layer SRH: computed column-by-column
     let mut eff_srh = vec![0.0f64; nxy];
@@ -113,7 +113,7 @@ pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfR
                 if p_prof.len() - k < 2 {
                     break;
                 }
-                let (c, ci, _, _) = wx_math::thermo::cape_cin_core(
+                let (c, ci, _, _) = crate::met::thermo::cape_cin_core(
                     &p_prof[k..], &t_prof[k..], &td_prof[k..], &h_prof[k..],
                     p_prof[k], t_prof[k], td_prof[k],
                     "sb", 100.0, 300.0, None,
@@ -132,8 +132,8 @@ pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfR
                 let eff_depth = h_prof[top] - h_prof[bot];
                 if eff_depth > 0.0 {
                     let ((sm_u, sm_v), _, _) =
-                        metrust::calc::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
-                    let (_, _, total) = metrust::calc::storm_relative_helicity(
+                        crate::met::wind::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
+                    let (_, _, total) = crate::met::wind::storm_relative_helicity(
                         &u_prof[bot..], &v_prof[bot..], &h_prof[bot..],
                         eff_depth, sm_u, sm_v,
                     );
@@ -210,15 +210,15 @@ pub fn compute_scp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let ny = f.ny;
     let nz = f.nz;
 
-    let (mucape, _, _, _) = wx_math::composite::compute_cape_cin(
+    let (mucape, _, _, _) = crate::met::composite::compute_cape_cin(
         &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
         nx, ny, nz, "mu",
     );
 
-    let srh3 = wx_math::composite::compute_srh(&u, &v, &h_agl, nx, ny, nz, 3000.0);
-    let shear6 = wx_math::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
+    let srh3 = crate::met::composite::compute_srh(&u, &v, &h_agl, nx, ny, nz, 3000.0);
+    let shear6 = crate::met::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
 
-    Ok(wx_math::composite::compute_scp(&mucape, &srh3, &shear6))
+    Ok(crate::met::composite::compute_scp(&mucape, &srh3, &shear6))
 }
 
 /// Energy-Helicity Index (dimensionless). `[ny, nx]`
@@ -241,13 +241,13 @@ pub fn compute_ehi(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f
     let ny = f.ny;
     let nz = f.nz;
 
-    let (sbcape, _, _, _) = wx_math::composite::compute_cape_cin(
+    let (sbcape, _, _, _) = crate::met::composite::compute_cape_cin(
         &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
         nx, ny, nz, "sb",
     );
 
     let srh_depth = opts.depth_m.unwrap_or(1000.0);
-    let srh = wx_math::composite::compute_srh(&u, &v, &h_agl, nx, ny, nz, srh_depth);
+    let srh = crate::met::composite::compute_srh(&u, &v, &h_agl, nx, ny, nz, srh_depth);
 
     // EHI = (CAPE * SRH) / 160000
     Ok(sbcape
@@ -283,12 +283,12 @@ pub fn compute_critical_angle(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> Wrf
 
         // Get Bunkers RM storm motion
         let ((sm_u, sm_v), _, _) =
-            metrust::calc::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
+            crate::met::wind::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
 
         // Interpolate wind at 500m
         let (u_500, v_500) = interp_wind_at_height(&u_prof, &v_prof, &h_prof, 500.0);
 
-        *val = metrust::calc::critical_angle(sm_u, sm_v, u_prof[0], v_prof[0], u_500, v_500);
+        *val = crate::met::wind::critical_angle(sm_u, sm_v, u_prof[0], v_prof[0], u_500, v_500);
     });
 
     Ok(result)
@@ -309,7 +309,7 @@ pub fn compute_ship(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec
     let nz = f.nz;
     let nxy = nx * ny;
 
-    let (mucape, _, _, _) = wx_math::composite::compute_cape_cin(
+    let (mucape, _, _, _) = crate::met::composite::compute_cape_cin(
         &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
         nx, ny, nz, "mu",
     );
@@ -330,7 +330,7 @@ pub fn compute_ship(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec
     });
 
     // Simple SHIP approximation: MUCAPE * |mixing_ratio| * lapse_rate * (-T500) * shear / denom
-    // Using wx_math if available, otherwise simplified version
+    // Simplified SHIP version
     Ok(mucape
         .par_iter()
         .zip(t500.par_iter())
@@ -358,12 +358,12 @@ pub fn compute_bri(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let ny = f.ny;
     let nz = f.nz;
 
-    let (sbcape, _, _, _) = wx_math::composite::compute_cape_cin(
+    let (sbcape, _, _, _) = crate::met::composite::compute_cape_cin(
         &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
         nx, ny, nz, "sb",
     );
 
-    let shear6 = wx_math::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
+    let shear6 = crate::met::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
 
     // BRN = CAPE / (0.5 * shear^2)
     Ok(sbcape

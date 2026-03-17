@@ -1,6 +1,6 @@
 //! Storm-relative helicity and bulk shear diagnostics.
 //!
-//! Uses proper Bunkers storm motion (wx_math / metrust), NOT wrf-python's
+//! Uses proper Bunkers storm motion (crate::met), NOT wrf-python's
 //! broken 0.75*(3-10km mean wind) rotated 30 degrees.
 
 use rayon::prelude::*;
@@ -41,15 +41,15 @@ fn compute_srh_field(
             }
 
             let (sm_u, sm_v) = storm_motion.unwrap();
-            let (_, _, total) = metrust::calc::storm_relative_helicity(
+            let (_, _, total) = crate::met::wind::storm_relative_helicity(
                 &u_prof, &v_prof, &h_prof, depth_m, sm_u, sm_v,
             );
             *srh_val = total;
         });
         Ok(srh)
     } else {
-        // Default: use wx_math's grid-parallel SRH with Bunkers
-        Ok(wx_math::composite::compute_srh(
+        // Default: use grid-parallel SRH with Bunkers
+        Ok(crate::met::composite::compute_srh(
             &u, &v, &h_agl, nx, ny, nz, depth_m,
         ))
     }
@@ -71,7 +71,7 @@ fn compute_shear_field(
     let nz = f.nz;
     let _nxy = nx * ny;
 
-    Ok(wx_math::composite::compute_shear(
+    Ok(crate::met::composite::compute_shear(
         &u, &v, &h_agl, nx, ny, nz, bottom_m, top_m,
     ))
 }
@@ -114,7 +114,7 @@ fn compute_bunkers_columns(
             }
 
             let ((ru, rv), (lu, lv), (mu, mv)) =
-                metrust::calc::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
+                crate::met::wind::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
             (ij, ru, rv, lu, lv, mu, mv)
         })
         .collect();
@@ -236,7 +236,7 @@ pub fn compute_effective_srh(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfRe
             }
 
             // Compute CAPE/CIN for a parcel lifted from level k
-            let (cape_k, cin_k, _, _) = wx_math::thermo::cape_cin_core(
+            let (cape_k, cin_k, _, _) = crate::met::thermo::cape_cin_core(
                 &p_prof[k..],
                 &t_prof[k..],
                 &td_prof[k..],
@@ -285,11 +285,11 @@ pub fn compute_effective_srh(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfRe
             (cu, cv)
         } else {
             let ((ru, rv), _, _) =
-                metrust::calc::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
+                crate::met::wind::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
             (ru, rv)
         };
 
-        let (_, _, total) = metrust::calc::storm_relative_helicity(
+        let (_, _, total) = crate::met::wind::storm_relative_helicity(
             &u_eff, &v_eff, &h_eff, depth, sm_u, sm_v,
         );
         *srh_val = total;
@@ -340,7 +340,7 @@ pub fn compute_mean_wind(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult
                 h_prof.push(h_agl[idx]);
             }
 
-            let (mu, mv) = metrust::calc::mean_wind(&u_prof, &v_prof, &h_prof, bottom, top);
+            let (mu, mv) = crate::met::wind::mean_wind(&u_prof, &v_prof, &h_prof, bottom, top);
             (ij, mu, mv)
         })
         .collect();

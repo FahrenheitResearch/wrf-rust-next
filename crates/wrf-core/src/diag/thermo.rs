@@ -34,11 +34,11 @@ pub fn compute_theta_e(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
         .zip(tc.par_iter())
         .zip(qv.par_iter())
         .map(|((p, t_c), q)| {
-            let td_c = wx_math::thermo::dewpoint_from_rh(
+            let td_c = crate::met::thermo::dewpoint_from_rh(
                 *t_c,
                 rh_from_q(*q, *p, *t_c),
             );
-            wx_math::thermo::equivalent_potential_temperature(*p, *t_c, td_c) + 273.15
+            crate::met::thermo::equivalent_potential_temperature(*p, *t_c, td_c) + 273.15
         })
         .collect();
     Ok(result)
@@ -68,7 +68,7 @@ pub fn compute_twb(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
         .zip(qv.par_iter())
         .map(|((p, t_c), q)| {
             let td_c = dewpoint_from_q(*q, *p);
-            wx_math::thermo::wet_bulb_temperature(*p, *t_c, td_c) + 273.15
+            crate::met::thermo::wet_bulb_temperature(*p, *t_c, td_c) + 273.15
         })
         .collect())
 }
