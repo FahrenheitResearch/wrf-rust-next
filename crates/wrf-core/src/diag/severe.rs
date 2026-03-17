@@ -9,7 +9,8 @@ use crate::file::WrfFile;
 
 /// Significant Tornado Parameter -- fixed layer (dimensionless). `[ny, nx]`
 ///
-/// Thompson et al. (2003) formulation with proper term limits:
+/// Thompson et al. (2003) formulation with proper term limits.
+/// Uses SURFACE-BASED parcel for CAPE and LCL, 0-1 km SRH, 0-6 km shear.
 ///   STP = cape_term * lcl_term * srh_term * shear_term
 pub fn compute_stp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let pres = f.full_pressure(t)?;
@@ -28,10 +29,10 @@ pub fn compute_stp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 
     let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
 
-    // MLCAPE + LCL
-    let (mlcape, _, lcl, _) = wx_math::composite::compute_cape_cin(
+    // Surface-based CAPE + LCL
+    let (sbcape, _, lcl, _) = wx_math::composite::compute_cape_cin(
         &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
-        nx, ny, nz, "ml",
+        nx, ny, nz, "sb",
     );
 
     // 0-1 km SRH
@@ -40,13 +41,16 @@ pub fn compute_stp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     // 0-6 km shear magnitude
     let shear6 = wx_math::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
 
-    Ok(stp_from_components(&mlcape, &lcl, &srh1, &shear6))
+    Ok(stp_fixed_from_components(&sbcape, &lcl, &srh1, &shear6))
 }
 
 /// Effective-layer Significant Tornado Parameter (dimensionless). `[ny, nx]`
 ///
-/// Uses the effective inflow layer (CAPE >= 100, CIN >= -250) for CAPE and SRH
-/// instead of fixed mixed-layer / 0-1 km values.
+/// Uses MIXED-LAYER parcel for CAPE, LCL, and CIN.
+/// Uses effective inflow layer SRH and effective bulk wind difference (EBWD).
+/// Includes CIN term: (200 + mlCIN) / 150.
+///
+/// STP_eff = (mlCAPE/1500) * ((2000-mlLCL)/1000) * (ESRH/150) * (EBWD/20) * ((200+mlCIN)/150)
 pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let pres = f.full_pressure(t)?;
     let tc = f.temperature_c(t)?;
@@ -65,25 +69,22 @@ pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfR
 
     let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
 
-    // LCL from mixed-layer parcel (needed for LCL term regardless of layer type)
-    let (_, _, lcl, _) = wx_math::composite::compute_cape_cin(
+    // Mixed-layer CAPE, CIN, and LCL
+    let (mlcape, mlcin, lcl, _) = wx_math::composite::compute_cape_cin(
         &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
         nx, ny, nz, "ml",
     );
 
-    // 0-6 km shear magnitude (fixed layer, same as standard STP)
+    // 0-6 km shear magnitude (EBWD approximation)
     let shear6 = wx_math::composite::compute_shear(&u, &v, &h_agl, nx, ny, nz, 0.0, 6000.0);
 
-    // Effective-layer CAPE and SRH: computed column-by-column
-    let mut eff_cape = vec![0.0f64; nxy];
+    // Effective-layer SRH: computed column-by-column
     let mut eff_srh = vec![0.0f64; nxy];
 
-    eff_cape
+    eff_srh
         .par_iter_mut()
-        .zip(eff_srh.par_iter_mut())
         .enumerate()
-        .for_each(|(ij, (cape_val, srh_val))| {
-            // Extract column profiles
+        .for_each(|(ij, srh_val)| {
             let mut p_prof = Vec::with_capacity(nz);
             let mut t_prof = Vec::with_capacity(nz);
             let mut td_prof = Vec::with_capacity(nz);
@@ -104,8 +105,7 @@ pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfR
                 v_prof.push(v[idx]);
             }
 
-            // Find the effective inflow layer: lowest contiguous layer where
-            // parcel CAPE >= 100 J/kg AND CIN >= -250 J/kg
+            // Find effective inflow layer
             let mut eff_bot: Option<usize> = None;
             let mut eff_top: Option<usize> = None;
 
@@ -124,30 +124,11 @@ pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfR
                     }
                     eff_top = Some(k);
                 } else if eff_bot.is_some() {
-                    // End of contiguous effective layer
                     break;
                 }
             }
 
             if let (Some(bot), Some(top)) = (eff_bot, eff_top) {
-                // MUCAPE within the effective layer: find parcel with max CAPE
-                let mut max_cape = 0.0f64;
-                for k in bot..=top {
-                    if p_prof.len() - k < 2 {
-                        break;
-                    }
-                    let (c, _, _, _) = wx_math::thermo::cape_cin_core(
-                        &p_prof[k..], &t_prof[k..], &td_prof[k..], &h_prof[k..],
-                        p_prof[k], t_prof[k], td_prof[k],
-                        "sb", 100.0, 300.0, None,
-                    );
-                    if c > max_cape {
-                        max_cape = c;
-                    }
-                }
-                *cape_val = max_cape;
-
-                // Effective-layer SRH: from effective bottom height to effective top height
                 let eff_depth = h_prof[top] - h_prof[bot];
                 if eff_depth > 0.0 {
                     let ((sm_u, sm_v), _, _) =
@@ -161,7 +142,7 @@ pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfR
             }
         });
 
-    Ok(stp_from_components(&eff_cape, &lcl, &eff_srh, &shear6))
+    Ok(stp_eff_from_components(&mlcape, &lcl, &mlcin, &eff_srh, &shear6))
 }
 
 /// Generic STP dispatcher: uses opts.layer_type to choose fixed or effective.
@@ -175,40 +156,40 @@ pub fn compute_stp_generic(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResu
     }
 }
 
-/// Thompson et al. (2003) STP from pre-computed component arrays.
-///
-/// Applies the standard term limits:
-///   cape_term  = (CAPE / 1500).max(0)
-///   lcl_term   = ((2000 - LCL) / 1000), capped [0, 1]
-///   srh_term   = (SRH / 150).max(0)
-///   shear_term = (shear / 20), capped [0, 1.5], zeroed when shear < 12.5
-fn stp_from_components(cape: &[f64], lcl: &[f64], srh: &[f64], shear: &[f64]) -> Vec<f64> {
+/// Fixed-layer STP: 4-term formula (no CIN).
+///   STP = (sbCAPE/1500) * ((2000-LCL)/1000) * (SRH/150) * (shear/20)
+fn stp_fixed_from_components(cape: &[f64], lcl: &[f64], srh: &[f64], shear: &[f64]) -> Vec<f64> {
     cape.par_iter()
         .zip(lcl.par_iter())
         .zip(srh.par_iter())
         .zip(shear.par_iter())
         .map(|(((c, l), s), sh)| {
             let cape_term = (c / 1500.0).max(0.0);
-
-            let lcl_term = if *l >= 2000.0 {
-                0.0
-            } else if *l <= 1000.0 {
-                1.0
-            } else {
-                (2000.0 - l) / 1000.0
-            };
-
+            let lcl_term = if *l >= 2000.0 { 0.0 } else if *l <= 1000.0 { 1.0 } else { (2000.0 - l) / 1000.0 };
             let srh_term = (s / 150.0).max(0.0);
-
-            let shear_term = if *sh < 12.5 {
-                0.0
-            } else if *sh >= 30.0 {
-                1.5
-            } else {
-                sh / 20.0
-            };
-
+            let shear_term = if *sh < 12.5 { 0.0 } else if *sh >= 30.0 { 1.5 } else { sh / 20.0 };
             cape_term * lcl_term * srh_term * shear_term
+        })
+        .collect()
+}
+
+/// Effective-layer STP: 5-term formula with CIN.
+///   STP_eff = (mlCAPE/1500) * ((2000-mlLCL)/1000) * (ESRH/150) * (EBWD/20) * ((200+mlCIN)/150)
+fn stp_eff_from_components(cape: &[f64], lcl: &[f64], cin: &[f64], srh: &[f64], shear: &[f64]) -> Vec<f64> {
+    cape.par_iter()
+        .zip(lcl.par_iter())
+        .zip(cin.par_iter())
+        .zip(srh.par_iter())
+        .zip(shear.par_iter())
+        .map(|((((c, l), ci), s), sh)| {
+            let cape_term = (c / 1500.0).max(0.0);
+            let lcl_term = if *l >= 2000.0 { 0.0 } else if *l <= 1000.0 { 1.0 } else { (2000.0 - l) / 1000.0 };
+            let srh_term = (s / 150.0).max(0.0);
+            let shear_term = if *sh < 12.5 { 0.0 } else if *sh >= 30.0 { 1.5 } else { sh / 20.0 };
+            // CIN term: (200 + mlCIN) / 150, clamped to [0, 1]
+            // CIN is negative, so 200 + CIN shrinks toward 0 as CIN gets more negative
+            let cin_term = ((200.0 + ci) / 150.0).clamp(0.0, 1.0);
+            cape_term * lcl_term * srh_term * shear_term * cin_term
         })
         .collect()
 }
