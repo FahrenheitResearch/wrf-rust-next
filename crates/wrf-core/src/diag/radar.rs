@@ -1,20 +1,10 @@
 //! Radar diagnostic variables: dbz, maxdbz
 //!
 //! Simulated reflectivity from hydrometeor mixing ratios following
-//! WRF's `module_diag_functions.F` (`REFL_10CM`).
+//! wrf-python's `wrf_user_dbz.f90` (`CALCDBZ`) subroutine.
 //!
-//! The equivalent reflectivity factor (mm^6 m^-3) for each species is:
-//!
-//!   Z_e = C * (rho_air * q)^1.75
-//!
-//! where C = factor / (pi^1.75 * rho_x^1.75 * N0^0.75) * 1e18
-//!   factor = 720 (sixth moment of exponential DSD)
-//!   rho_x  = hydrometeor material density (kg m^-3)
-//!   N0     = intercept parameter (m^-4)
-//!   1e18   = unit conversion from m^3 to mm^6 m^-3
-//!
-//! Ice species (snow, graupel) are further scaled by |K_ice|^2/|K_water|^2
-//! = 0.224 for the dielectric factor.
+//! Uses constant intercept parameters (ivarint=0) and bright-band
+//! correction (iliqskin=1), matching the wrf-python defaults.
 
 use rayon::prelude::*;
 
@@ -22,27 +12,31 @@ use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;
 
-const RD: f64 = 287.058;
+// --- Physical constants (wrf_constants) ---
+const GAMMA_SEVEN: f64 = 720.0;
+const PI: f64 = std::f64::consts::PI;
+const RD: f64 = 287.04;
+const CELKEL: f64 = 273.15;
+const RHOWAT: f64 = 1000.0;
+const ALPHA: f64 = 0.224; // |K_ice|^2 / |K_water|^2
 
-// --- Precomputed reflectivity coefficients (mm^6 m^-3) ---
-//
-// C_rain = 720 / (pi^1.75 * 1000^1.75 * (8e6)^0.75) * 1e18
-// C_snow = 0.224 * 720 / (pi^1.75 * 100^1.75 * (2e7)^0.75) * 1e18
-// C_graup = 0.224 * 720 / (pi^1.75 * 400^1.75 * (4e6)^0.75) * 1e18
-//
-// N0_rain  = 8.0e6  m^-4,  rho_water  = 1000 kg/m^3
-// N0_snow  = 2.0e7  m^-4,  rho_snow   =  100 kg/m^3
-// N0_graup = 4.0e6  m^-4,  rho_graupel=  400 kg/m^3
-const COEFF_RAIN: f64 = 3.630_803_362_5e9;
-const COEFF_SNOW: f64 = 2.300_359_648_2e10;
-const COEFF_GRAUP: f64 = 6.798_580_734_2e9;
+// --- Hydrometeor densities (kg m^-3) ---
+const RHO_R: f64 = 1000.0; // rain
+const RHO_S: f64 = 100.0; // snow
+const RHO_G: f64 = 400.0; // graupel
+
+// --- Constant intercept parameters (m^-4) ---
+const RN0_R: f64 = 8.0e6;
+const RN0_S: f64 = 2.0e7;
+const RN0_G: f64 = 4.0e6;
 
 /// Simulated reflectivity (dBZ). `[nz, ny, nx]`
 ///
-/// Matches WRF's `module_diag_functions.F` `REFL_10CM` diagnostic.
-/// Rain, snow, and graupel contributions use Marshall-Palmer intercept
-/// parameters and density corrections consistent with the WRF defaults
-/// (WSM6/Thompson-like microphysics).
+/// Matches wrf-python's `CALCDBZ` from `wrf_user_dbz.f90` with constant
+/// intercept parameters (ivarint=0) and bright-band correction (iliqskin=1).
+///
+/// When QSNOW is not present in the file (sn0=0 behavior), rain mixing
+/// ratio is reassigned to snow below freezing.
 pub fn compute_dbz(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let tk = f.temperature(t)?;
     let pres = f.full_pressure(t)?;
@@ -50,8 +44,29 @@ pub fn compute_dbz(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 
     // Try to read hydrometeor fields; default to zero if absent
     let qr = f.read_var("QRAIN", t).unwrap_or_else(|_| vec![0.0; f.nxyz()]);
-    let qs = f.read_var("QSNOW", t).unwrap_or_else(|_| vec![0.0; f.nxyz()]);
+    let have_snow = f.read_var("QSNOW", t);
+    let sn0 = have_snow.is_ok();
+    let qs = have_snow.unwrap_or_else(|_| vec![0.0; f.nxyz()]);
     let qg = f.read_var("QGRAUP", t).unwrap_or_else(|_| vec![0.0; f.nxyz()]);
+
+    // --- Precompute factors exactly as in CALCDBZ ---
+    // factor_r = GAMMA_SEVEN * 1e18 * (1/(PI*RHO_R))^1.75
+    // factor_s = GAMMA_SEVEN * 1e18 * (1/(PI*RHO_S))^1.75 * (RHO_S/RHOWAT)^2 * ALPHA
+    // factor_g = GAMMA_SEVEN * 1e18 * (1/(PI*RHO_G))^1.75 * (RHO_G/RHOWAT)^2 * ALPHA
+    let factor_r = GAMMA_SEVEN * 1.0e18 * (1.0 / (PI * RHO_R)).powf(1.75);
+    let factor_s =
+        GAMMA_SEVEN * 1.0e18 * (1.0 / (PI * RHO_S)).powf(1.75) * (RHO_S / RHOWAT).powi(2) * ALPHA;
+    let factor_g =
+        GAMMA_SEVEN * 1.0e18 * (1.0 / (PI * RHO_G)).powf(1.75) * (RHO_G / RHOWAT).powi(2) * ALPHA;
+
+    // Bright-band: above freezing, snow and graupel drop ALPHA
+    let factorb_s = factor_s / ALPHA;
+    let factorb_g = factor_g / ALPHA;
+
+    // Constant intercept N0 values
+    let ronv = RN0_R;
+    let sonv = RN0_S;
+    let gonv = RN0_G;
 
     let n = f.nxyz();
 
@@ -59,39 +74,36 @@ pub fn compute_dbz(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
         .into_par_iter()
         .map(|i| {
             let t_k = tk[i];
-            let qv_i = qv[i].max(0.0);
-            let tv = t_k * (1.0 + 0.61 * qv_i);
-            let rho = pres[i] / (RD * tv);
+            let qvp = qv[i].max(0.0);
 
-            let qr_i = qr[i].max(0.0);
-            let qs_i = qs[i].max(0.0);
-            let qg_i = qg[i].max(0.0);
+            // Virtual temperature: full formula from CALCDBZ
+            let virtual_t = t_k * (0.622 + qvp) / (0.622 * (1.0 + qvp));
+            let rhoair = pres[i] / (RD * virtual_t);
 
-            // Z_e (mm^6 m^-3) = C * (rho_air * q)^1.75
-            let z_rain = if qr_i > 1e-8 {
-                COEFF_RAIN * (rho * qr_i).powf(1.75)
-            } else {
-                0.0
-            };
+            // Hydrometeor mixing ratios (clamp to zero)
+            let mut qra = qr[i].max(0.0);
+            let mut qsn = qs[i].max(0.0);
+            let qgr = qg[i].max(0.0);
 
-            let z_snow = if qs_i > 1e-8 {
-                COEFF_SNOW * (rho * qs_i).powf(1.75)
-            } else {
-                0.0
-            };
-
-            let z_graup = if qg_i > 1e-8 {
-                COEFF_GRAUP * (rho * qg_i).powf(1.75)
-            } else {
-                0.0
-            };
-
-            let z_total = z_rain + z_snow + z_graup;
-            if z_total > 0.0 {
-                10.0 * z_total.log10()
-            } else {
-                -30.0 // below noise floor
+            // sn0=0 behavior: no separate snow variable, so below freezing
+            // move rain to snow
+            if !sn0 && t_k < CELKEL {
+                qsn = qra;
+                qra = 0.0;
             }
+
+            // Bright-band correction (iliqskin=1): use factorb (no ALPHA)
+            // when above freezing, otherwise use factor (with ALPHA)
+            let fs = if t_k > CELKEL { factorb_s } else { factor_s };
+            let fg = if t_k > CELKEL { factorb_g } else { factor_g };
+
+            // Z_e = factor * (rhoair*q)^1.75 / N0^0.75
+            let z_r = factor_r * (rhoair * qra).powf(1.75) / ronv.powf(0.75);
+            let z_s = fs * (rhoair * qsn).powf(1.75) / sonv.powf(0.75);
+            let z_g = fg * (rhoair * qgr).powf(1.75) / gonv.powf(0.75);
+
+            let z_e = (z_r + z_s + z_g).max(0.001);
+            10.0 * z_e.log10()
         })
         .collect();
 
