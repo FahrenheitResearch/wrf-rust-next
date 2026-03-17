@@ -254,42 +254,23 @@ fn compute_srh_column(
     let has_pressure = p_prof.len() == nz;
 
     // 1. Compute mean wind in 0-6 km layer
-    let (mean_u, mean_v) = if has_pressure {
-        // Pressure-weighted mean (SHARPpy convention)
-        let mut sum_u = 0.0;
-        let mut sum_v = 0.0;
-        let mut sum_w = 0.0;
-        for k in 0..nz {
-            if heights[k] > mean_depth {
-                break;
-            }
-            let w = p_prof[k]; // weight = pressure in hPa
-            sum_u += u_prof[k] * w;
-            sum_v += v_prof[k] * w;
-            sum_w += w;
+    // Non-pressure-weighted arithmetic mean (SHARPpy mean_wind_npw convention)
+    let mut sum_u = 0.0;
+    let mut sum_v = 0.0;
+    let mut count = 0usize;
+    for k in 0..nz {
+        if heights[k] > mean_depth {
+            break;
         }
-        if sum_w <= 0.0 {
-            return 0.0;
-        }
-        (sum_u / sum_w, sum_v / sum_w)
-    } else {
-        // Arithmetic mean fallback
-        let mut sum_u = 0.0;
-        let mut sum_v = 0.0;
-        let mut count = 0usize;
-        for k in 0..nz {
-            if heights[k] > mean_depth {
-                break;
-            }
-            sum_u += u_prof[k];
-            sum_v += v_prof[k];
-            count += 1;
-        }
-        if count == 0 {
-            return 0.0;
-        }
-        (sum_u / count as f64, sum_v / count as f64)
-    };
+        sum_u += u_prof[k];
+        sum_v += v_prof[k];
+        count += 1;
+    }
+    if count == 0 {
+        return 0.0;
+    }
+    let mean_u = sum_u / count as f64;
+    let mean_v = sum_v / count as f64;
 
     // 2. Compute 0-6 km shear vector
     let u_sfc = u_prof[0];
