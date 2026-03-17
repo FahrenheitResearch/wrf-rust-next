@@ -72,22 +72,24 @@ fn compute_cape_fields(
 
             for k in 0..nz {
                 let idx = k * nxy + ij;
-                p_prof.push(pres[idx]); // Pa -- cape_cin_core auto-detects
-                t_prof.push(tc[idx]);
-                // Compute Td from q and p (dewpoint formula needs hPa)
+                let p_hpa = pres[idx] / 100.0;
+                p_prof.push(p_hpa);           // hPa
+                t_prof.push(tc[idx]);          // Celsius
+                // Compute Td from q and p
                 let q = qv[idx].max(1e-10);
-                let p_hpa = pres_hpa[idx];
                 let e = q * p_hpa / (0.622 + q);
                 let ln_e = (e / 6.112).max(1e-10).ln();
                 let td = (243.5 * ln_e) / (17.67 - ln_e);
-                td_prof.push(td);
-                h_prof.push(h_agl[idx]);
+                td_prof.push(td);              // Celsius
+                h_prof.push(h_agl[idx]);       // m AGL
             }
 
-            // Pass Pa/K values -- cape_cin_core auto-detects and converts
+            // Pass hPa/C -- consistent units so auto-detect doesn't double-convert
+            let psfc_hpa = psfc[ij] / 100.0;
+            let t2_c = t2[ij] - 273.15;
             let (c, ci, l, lf) = crate::met::thermo::cape_cin_core(
                 &p_prof, &t_prof, &td_prof, &h_prof,
-                psfc[ij], t2[ij], td_prof.first().copied().unwrap_or(0.0),
+                psfc_hpa, t2_c, td_prof.first().copied().unwrap_or(0.0),
                 parcel_type, 100.0, 300.0, top_m,
             );
 
