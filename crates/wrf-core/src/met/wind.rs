@@ -148,8 +148,9 @@ pub fn storm_relative_helicity(
         let srv_ip1 = vs[i + 1] - storm_v;
 
         // Cross-product contribution (2-D "area" form)
-        // Positive for clockwise-turning (veering) hodographs in the NH.
-        let contrib = (sru_i * srv_ip1) - (sru_ip1 * srv_i);
+        // Convention: positive for clockwise-turning (veering) hodographs in NH
+        // Matches MetPy/SHARPpy sign convention
+        let contrib = (sru_ip1 * srv_i) - (sru_i * srv_ip1);
 
         if contrib > 0.0 {
             pos_srh += contrib;

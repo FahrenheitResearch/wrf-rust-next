@@ -58,9 +58,6 @@ pub fn getvar(
     timeidx: Option<usize>,
     opts: &ComputeOpts,
 ) -> WrfResult<VarOutput> {
-    let vardef = get_var_def(name)
-        .ok_or_else(|| WrfError::UnknownVar(name.to_string()))?;
-
     let t = timeidx.unwrap_or(0);
     if t >= file.nt {
         return Err(WrfError::InvalidParam(format!(
@@ -68,6 +65,16 @@ pub fn getvar(
             file.nt
         )));
     }
+
+    // Look up in computed variable registry first
+    let vardef = match get_var_def(name) {
+        Some(v) => v,
+        None => {
+            // Fallback: try reading as a raw WRF variable directly from the file.
+            // This handles RAINNC, RAINC, PBLH, HFX, LU_INDEX, SWDOWN, TSK, SST, etc.
+            return getvar_raw(file, name, t, opts);
+        }
+    };
 
     let mut data = (vardef.compute)(file, t, opts)?;
 
@@ -110,5 +117,44 @@ pub fn getvar(
         shape: final_shape,
         units: actual_units,
         description: vardef.description.to_string(),
+    })
+}
+
+/// Fallback: read a raw WRF variable directly from the file.
+/// Used when the variable name is not in the computed registry.
+fn getvar_raw(
+    file: &WrfFile,
+    name: &str,
+    t: usize,
+    opts: &ComputeOpts,
+) -> WrfResult<VarOutput> {
+    // Try reading the variable by its exact name (case-sensitive, uppercase WRF convention)
+    let data = file.read_var(name, t)
+        .or_else(|_| file.read_var(&name.to_uppercase(), t))
+        .map_err(|_| WrfError::UnknownVar(format!(
+            "{name} (not in computed registry and not found as raw variable in file)"
+        )))?;
+
+    let nxy = file.nxy();
+    let nxyz = file.nxyz();
+
+    let shape = if data.len() == nxy {
+        vec![file.ny, file.nx]
+    } else if data.len() == nxyz {
+        vec![file.nz, file.ny, file.nx]
+    } else if data.len() % nxy == 0 {
+        let nlevels = data.len() / nxy;
+        vec![nlevels, file.ny, file.nx]
+    } else {
+        vec![data.len()]
+    };
+
+    let units = opts.units.clone().unwrap_or_default();
+
+    Ok(VarOutput {
+        data,
+        shape,
+        units,
+        description: format!("Raw WRF variable: {name}"),
     })
 }
