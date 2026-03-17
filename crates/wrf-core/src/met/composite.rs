@@ -182,7 +182,23 @@ pub fn compute_srh(
     nz: usize,
     top_m: f64,
 ) -> Vec<f64> {
+    // No pressure data available -- pass empty slice, column fn will use arithmetic mean
+    compute_srh_with_pressure(u_3d, v_3d, height_agl_3d, &[], nx, ny, nz, top_m)
+}
+
+/// Compute SRH with pressure-weighted Bunkers storm motion (SHARPpy convention).
+pub fn compute_srh_with_pressure(
+    u_3d: &[f64],
+    v_3d: &[f64],
+    height_agl_3d: &[f64],
+    pressure_hpa_3d: &[f64],
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    top_m: f64,
+) -> Vec<f64> {
     let n2d = ny * nx;
+    let has_pressure = pressure_hpa_3d.len() == nz * ny * nx;
 
     (0..n2d)
         .into_par_iter()
@@ -193,30 +209,40 @@ pub fn compute_srh(
             let u_col = extract_column(u_3d, nz, ny, nx, j, i);
             let v_col = extract_column(v_3d, nz, ny, nx, j, i);
             let h_col = extract_column(height_agl_3d, nz, ny, nx, j, i);
+            let p_col = if has_pressure {
+                extract_column(pressure_hpa_3d, nz, ny, nx, j, i)
+            } else {
+                vec![]
+            };
 
             // Ensure ordered from surface upward
-            let (h_prof, u_prof, v_prof) = if h_col.len() > 1 && h_col[0] > h_col[h_col.len() - 1] {
+            let (h_prof, u_prof, v_prof, p_prof) = if h_col.len() > 1 && h_col[0] > h_col[h_col.len() - 1] {
                 let mut h = h_col;
                 let mut u = u_col;
                 let mut v = v_col;
+                let mut p = p_col;
                 h.reverse();
                 u.reverse();
                 v.reverse();
-                (h, u, v)
+                p.reverse();
+                (h, u, v, p)
             } else {
-                (h_col, u_col, v_col)
+                (h_col, u_col, v_col, p_col)
             };
 
-            compute_srh_column(&h_prof, &u_prof, &v_prof, top_m)
+            compute_srh_column(&h_prof, &u_prof, &v_prof, &p_prof, top_m)
         })
         .collect()
 }
 
 /// Compute SRH for a single column using Bunkers storm motion.
+/// If `p_prof` is non-empty, uses pressure-weighted mean wind (SHARPpy convention).
+/// Otherwise falls back to arithmetic mean.
 fn compute_srh_column(
     heights: &[f64],
     u_prof: &[f64],
     v_prof: &[f64],
+    p_prof: &[f64],
     top_m: f64,
 ) -> f64 {
     let nz = heights.len();
@@ -224,35 +250,46 @@ fn compute_srh_column(
         return 0.0;
     }
 
-    // 1. Compute mean wind in 0-6 km layer
     let mean_depth = 6000.0;
-    let mut sum_u = 0.0;
-    let mut sum_v = 0.0;
-    let mut sum_dz = 0.0;
+    let has_pressure = p_prof.len() == nz;
 
-    for k in 0..nz - 1 {
-        if heights[k] >= mean_depth {
-            break;
+    // 1. Compute mean wind in 0-6 km layer
+    let (mean_u, mean_v) = if has_pressure {
+        // Pressure-weighted mean (SHARPpy convention)
+        let mut sum_u = 0.0;
+        let mut sum_v = 0.0;
+        let mut sum_w = 0.0;
+        for k in 0..nz {
+            if heights[k] > mean_depth {
+                break;
+            }
+            let w = p_prof[k]; // weight = pressure in hPa
+            sum_u += u_prof[k] * w;
+            sum_v += v_prof[k] * w;
+            sum_w += w;
         }
-        let h_bot = heights[k];
-        let h_top = heights[k + 1].min(mean_depth);
-        let dz = h_top - h_bot;
-        if dz <= 0.0 {
-            continue;
+        if sum_w <= 0.0 {
+            return 0.0;
         }
-        let u_mid = 0.5 * (u_prof[k] + u_prof[k + 1]);
-        let v_mid = 0.5 * (v_prof[k] + v_prof[k + 1]);
-        sum_u += u_mid * dz;
-        sum_v += v_mid * dz;
-        sum_dz += dz;
-    }
-
-    if sum_dz <= 0.0 {
-        return 0.0;
-    }
-
-    let mean_u = sum_u / sum_dz;
-    let mean_v = sum_v / sum_dz;
+        (sum_u / sum_w, sum_v / sum_w)
+    } else {
+        // Arithmetic mean fallback
+        let mut sum_u = 0.0;
+        let mut sum_v = 0.0;
+        let mut count = 0usize;
+        for k in 0..nz {
+            if heights[k] > mean_depth {
+                break;
+            }
+            sum_u += u_prof[k];
+            sum_v += v_prof[k];
+            count += 1;
+        }
+        if count == 0 {
+            return 0.0;
+        }
+        (sum_u / count as f64, sum_v / count as f64)
+    };
 
     // 2. Compute 0-6 km shear vector
     let u_sfc = u_prof[0];

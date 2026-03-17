@@ -16,16 +16,39 @@ fn compute_srh_field(
     depth_m: f64,
     storm_motion: Option<(f64, f64)>,
 ) -> WrfResult<Vec<f64>> {
-    let u = f.u_destag(t)?;
-    let v = f.v_destag(t)?;
+    // Use earth-rotated winds for SRH (matches SHARPpy/MetPy convention)
+    let u_grid = f.u_destag(t)?;
+    let v_grid = f.v_destag(t)?;
+    let sina = f.sinalpha(t)?;
+    let cosa = f.cosalpha(t)?;
     let h_agl = f.height_agl(t)?;
-    let u10 = f.u10(t)?;
-    let v10 = f.v10(t)?;
+    let pres_hpa = f.pressure_hpa(t)?;
+    let psfc_hpa: Vec<f64> = f.psfc(t)?.iter().map(|p| p / 100.0).collect();
+    let u10_grid = f.u10(t)?;
+    let v10_grid = f.v10(t)?;
 
     let nx = f.nx;
     let ny = f.ny;
-    let nz = f.nz;
     let nxy = nx * ny;
+
+    // Rotate 3D winds to earth coordinates
+    let mut u = vec![0.0f64; u_grid.len()];
+    let mut v = vec![0.0f64; v_grid.len()];
+    for idx in 0..u_grid.len() {
+        let ij = idx % nxy;
+        u[idx] = u_grid[idx] * cosa[ij] - v_grid[idx] * sina[ij];
+        v[idx] = u_grid[idx] * sina[ij] + v_grid[idx] * cosa[ij];
+    }
+
+    // Rotate 10m winds to earth coordinates
+    let mut u10 = vec![0.0f64; nxy];
+    let mut v10 = vec![0.0f64; nxy];
+    for ij in 0..nxy {
+        u10[ij] = u10_grid[ij] * cosa[ij] - v10_grid[ij] * sina[ij];
+        v10[ij] = u10_grid[ij] * sina[ij] + v10_grid[ij] * cosa[ij];
+    }
+
+    let nz = f.nz;
 
     if let Some((_sm_u, _sm_v)) = storm_motion {
         // Custom storm motion: compute column-by-column
@@ -60,12 +83,14 @@ fn compute_srh_field(
         let mut u_aug = Vec::with_capacity(nz_aug * nxy);
         let mut v_aug = Vec::with_capacity(nz_aug * nxy);
         let mut h_aug = Vec::with_capacity(nz_aug * nxy);
+        let mut p_aug = Vec::with_capacity(nz_aug * nxy);
 
-        // Level 0: 10m winds at 10m AGL
+        // Level 0: 10m winds at 10m AGL, surface pressure
         for ij in 0..nxy {
             u_aug.push(u10[ij]);
             v_aug.push(v10[ij]);
             h_aug.push(10.0);
+            p_aug.push(psfc_hpa[ij]);
         }
         // Levels 1..nz: model levels
         for k in 0..nz {
@@ -74,11 +99,12 @@ fn compute_srh_field(
                 u_aug.push(u[off + ij]);
                 v_aug.push(v[off + ij]);
                 h_aug.push(h_agl[off + ij]);
+                p_aug.push(pres_hpa[off + ij]);
             }
         }
 
-        Ok(crate::met::composite::compute_srh(
-            &u_aug, &v_aug, &h_aug, nx, ny, nz_aug, depth_m,
+        Ok(crate::met::composite::compute_srh_with_pressure(
+            &u_aug, &v_aug, &h_aug, &p_aug, nx, ny, nz_aug, depth_m,
         ))
     }
 }
