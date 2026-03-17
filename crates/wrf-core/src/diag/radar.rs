@@ -1,7 +1,20 @@
 //! Radar diagnostic variables: dbz, maxdbz
 //!
-//! Simulated reflectivity from hydrometeor mixing ratios using the
-//! Smith (1984) / Koch et al. Z-R relationship.
+//! Simulated reflectivity from hydrometeor mixing ratios following
+//! WRF's `module_diag_functions.F` (`REFL_10CM`).
+//!
+//! The equivalent reflectivity factor (mm^6 m^-3) for each species is:
+//!
+//!   Z_e = C * (rho_air * q)^1.75
+//!
+//! where C = factor / (pi^1.75 * rho_x^1.75 * N0^0.75) * 1e18
+//!   factor = 720 (sixth moment of exponential DSD)
+//!   rho_x  = hydrometeor material density (kg m^-3)
+//!   N0     = intercept parameter (m^-4)
+//!   1e18   = unit conversion from m^3 to mm^6 m^-3
+//!
+//! Ice species (snow, graupel) are further scaled by |K_ice|^2/|K_water|^2
+//! = 0.224 for the dielectric factor.
 
 use rayon::prelude::*;
 
@@ -9,21 +22,28 @@ use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;
 
-#[allow(dead_code)]
-const RHO_WATER: f64 = 1000.0; // kg/m^3
 const RD: f64 = 287.058;
+
+// --- Precomputed reflectivity coefficients (mm^6 m^-3) ---
+//
+// C_rain = 720 / (pi^1.75 * 1000^1.75 * (8e6)^0.75) * 1e18
+// C_snow = 0.224 * 720 / (pi^1.75 * 100^1.75 * (2e7)^0.75) * 1e18
+// C_graup = 0.224 * 720 / (pi^1.75 * 400^1.75 * (4e6)^0.75) * 1e18
+//
+// N0_rain  = 8.0e6  m^-4,  rho_water  = 1000 kg/m^3
+// N0_snow  = 2.0e7  m^-4,  rho_snow   =  100 kg/m^3
+// N0_graup = 4.0e6  m^-4,  rho_graupel=  400 kg/m^3
+const COEFF_RAIN: f64 = 3.630_803_362_5e9;
+const COEFF_SNOW: f64 = 2.300_359_648_2e10;
+const COEFF_GRAUP: f64 = 6.798_580_734_2e9;
 
 /// Simulated reflectivity (dBZ). `[nz, ny, nx]`
 ///
-/// Prefers WRF's native REFL_10CM if available (computed by microphysics scheme).
-/// Falls back to Smith (1984) formulation: Z = f(qr, qs, qg, rho_air).
+/// Matches WRF's `module_diag_functions.F` `REFL_10CM` diagnostic.
+/// Rain, snow, and graupel contributions use Marshall-Palmer intercept
+/// parameters and density corrections consistent with the WRF defaults
+/// (WSM6/Thompson-like microphysics).
 pub fn compute_dbz(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    // Prefer WRF's native reflectivity if available
-    if let Ok(refl) = f.read_var("REFL_10CM", t) {
-        if refl.len() == f.nxyz() {
-            return Ok(refl);
-        }
-    }
     let tk = f.temperature(t)?;
     let pres = f.full_pressure(t)?;
     let qv = f.qvapor(t)?;
@@ -47,28 +67,21 @@ pub fn compute_dbz(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
             let qs_i = qs[i].max(0.0);
             let qg_i = qg[i].max(0.0);
 
-            // Reflectivity factor Z (mm^6/m^3)
-            // Rain: Z_r = 720 * N0r^(-7/4) * (rho * qr)^(7/4)
-            // With N0r = 8e6 m^-4
+            // Z_e (mm^6 m^-3) = C * (rho_air * q)^1.75
             let z_rain = if qr_i > 1e-8 {
-                let rho_qr = rho * qr_i * 1000.0; // g/m^3
-                43.1 * rho_qr.powf(1.75)
+                COEFF_RAIN * (rho * qr_i).powf(1.75)
             } else {
                 0.0
             };
 
-            // Snow: Z_s = factor * (rho * qs)^1.75 (using rho_s = 100 kg/m^3)
             let z_snow = if qs_i > 1e-8 {
-                let rho_qs = rho * qs_i * 1000.0;
-                48.0 * rho_qs.powf(1.75)
+                COEFF_SNOW * (rho * qs_i).powf(1.75)
             } else {
                 0.0
             };
 
-            // Graupel: Z_g = factor * (rho * qg)^1.75
             let z_graup = if qg_i > 1e-8 {
-                let rho_qg = rho * qg_i * 1000.0;
-                94.5 * rho_qg.powf(1.75)
+                COEFF_GRAUP * (rho * qg_i).powf(1.75)
             } else {
                 0.0
             };

@@ -10,6 +10,14 @@ use crate::file::WrfFile;
 const G: f64 = 9.80665;
 const RD: f64 = 287.058;
 
+// WRF-python (NCAR) uses these rounded constants in its Fortran SLP routine.
+// We must match them exactly for SLP compatibility.
+const G_SLP: f64 = 9.81;
+const RD_SLP: f64 = 287.0;
+const USSALR: f64 = 0.0065; // US Standard Atmosphere lapse rate (K/m)
+const PCONST: f64 = 10000.0; // Pa above surface to find reference level
+const TC: f64 = 273.16 + 17.5; // ~290.66 K, temperature threshold for capping
+
 /// Full pressure (Pa). `[nz, ny, nx]`
 pub fn compute_pressure(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     f.full_pressure(t)
@@ -48,54 +56,90 @@ pub fn compute_terrain(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
 
 /// Sea-level pressure (hPa). `[ny, nx]`
 ///
-/// Uses the WRF method: Shuell's approach (Shuell 1995) with smoothed lapse rate.
+/// Matches wrf-python's DCOMPUTESEAPRS (Shuell 1995) exactly:
+/// 1. Find a reference level ~PCONST (100 hPa) above the surface to avoid
+///    diurnal heating artifacts in the lowest model level.
+/// 2. Log-interpolate virtual temperature and height at that reference pressure.
+/// 3. Compute t_surf and t_sea_level using the US Standard Atmosphere lapse rate.
+/// 4. Apply the "ridiculous_mm5_test" temperature capping (TC = 290.66 K).
+/// 5. Reduce to sea level: SLP = p_sfc * exp(2*g*z_sfc / (Rd*(t_sea_level + t_surf))).
 pub fn compute_slp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let pres = f.full_pressure(t)?;
     let tk = f.temperature(t)?;
     let qv = f.qvapor(t)?;
-    let h = f.height_msl(t)?;
-    let ter = f.terrain(t)?;
+    let z = f.height_msl(t)?;
 
     let nxy = f.nxy();
-    let _nz = f.nz;
+    let nz = f.nz;
 
     let mut slp = vec![0.0f64; nxy];
 
     slp.par_iter_mut().enumerate().for_each(|(ij, slp_val)| {
-        // Use lowest model level
-        let p_sfc = pres[ij]; // k=0 level
-        let t_sfc = tk[ij];
-        let qv_sfc = qv[ij].max(0.0);
-        let z_sfc = h[ij];
-        let z_ter = ter[ij];
+        let p_sfc = pres[ij]; // k=0 surface pressure
 
-        // Virtual temperature at surface
-        let tv_sfc = t_sfc * (1.0 + 0.61 * qv_sfc);
+        // Step 1: Find the level ~PCONST above the surface.
+        // We want the lowest k where p_sfc - p(k) >= PCONST.
+        let mut klo = 0usize;
+        let khi;
+        let mut found = false;
+        for k in 0..nz {
+            if (p_sfc - pres[k * nxy + ij]) >= PCONST {
+                klo = k;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            // All levels are within PCONST of surface; use top two levels
+            klo = nz - 1;
+        }
+        khi = if klo > 0 { klo - 1 } else { klo + 1 };
+        // klo is the level just above the PCONST threshold,
+        // khi is the level just below it
 
-        // Use next level up for lapse rate
-        let _p1 = pres[nxy + ij]; // k=1
-        let t1 = tk[nxy + ij];
-        let qv1 = qv[nxy + ij].max(0.0);
-        let tv1 = t1 * (1.0 + 0.61 * qv1);
-        let z1 = h[nxy + ij];
+        let plo = pres[klo * nxy + ij];
+        let phi = pres[khi * nxy + ij];
 
-        // Temperature lapse rate (K/m)
-        let gamma = if (z1 - z_sfc).abs() > 1.0 {
-            ((tv_sfc - tv1) / (z1 - z_sfc)).clamp(0.001, 0.0065)
+        // Virtual temperatures at bracketing levels (wrf-python uses 0.608)
+        let qlo = qv[klo * nxy + ij].max(0.0);
+        let qhi = qv[khi * nxy + ij].max(0.0);
+        let tlo = tk[klo * nxy + ij] * (1.0 + 0.608 * qlo);
+        let thi = tk[khi * nxy + ij] * (1.0 + 0.608 * qhi);
+        let zlo = z[klo * nxy + ij];
+        let zhi = z[khi * nxy + ij];
+
+        // Step 2: Log-interpolate to the exact PCONST level
+        let p_at_pconst = p_sfc - PCONST;
+        let (t_at_pconst, z_at_pconst) = if (plo - phi).abs() < 1.0 {
+            // Levels are nearly identical pressure; just use klo values
+            (tlo, zlo)
         } else {
-            0.0065
+            let frac = (p_at_pconst.ln() - phi.ln()) / (plo.ln() - phi.ln());
+            let t_interp = thi + frac * (tlo - thi);
+            let z_interp = zhi + frac * (zlo - zhi);
+            (t_interp, z_interp)
         };
 
-        // Standard barometric formula from surface to sea level
-        let dz = z_ter;
-        if dz.abs() < 1.0 {
-            *slp_val = p_sfc / 100.0;
+        // Step 3: Compute surface and sea-level temperatures using USSALR
+        let t_surf = t_at_pconst * (p_sfc / p_at_pconst).powf(USSALR * RD_SLP / G_SLP);
+        let mut t_sea_level = t_at_pconst + USSALR * z_at_pconst;
+
+        // Step 4: Temperature capping (the "ridiculous_mm5_test")
+        // This prevents unphysical extrapolation in warm/tropical regions.
+        // Matches wrf-python exactly: only two branches.
+        if t_surf <= TC && t_sea_level >= TC {
+            // Surface cool but sea-level warm: cap at TC
+            t_sea_level = TC;
         } else {
-            // Hypsometric equation with constant lapse rate
-            let t_sl = tv_sfc + gamma * dz;
-            let exponent = G / (RD * gamma);
-            *slp_val = (p_sfc * (t_sl / tv_sfc).powf(exponent)) / 100.0;
+            // All other cases: quadratic correction toward TC
+            t_sea_level = TC - 0.005 * (t_surf - TC) * (t_surf - TC);
         }
+
+        // Step 5: Reduce to sea level using mean of t_sea_level and t_surf
+        let z_sfc = z[ij]; // height of lowest model level
+        *slp_val = 0.01
+            * (p_sfc
+                * (2.0 * G_SLP * z_sfc / (RD_SLP * (t_sea_level + t_surf))).exp());
     });
 
     Ok(slp)
