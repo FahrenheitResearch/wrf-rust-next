@@ -1,21 +1,14 @@
 # wrf-rust
 
-Rust-powered WRF post-processing with Python bindings. 80+ diagnostic variables, configurable CAPE/SRH/shear/lapse rates, built-in plotting, and parallel computation via [rayon](https://crates.io/crates/rayon).
-
-Built on top of [wx-math](https://github.com/FahrenheitResearch/rustmet) and [metrust](https://github.com/FahrenheitResearch/metrust) for meteorological calculations.
+Rust-powered WRF post-processing with Python bindings. 83 diagnostic variables, built-in plotting, and parallel computation.
 
 ## Install
 
-Requires Rust, maturin, and system libnetcdf/libhdf5 (easiest from conda).
-
 ```bash
-conda install -c conda-forge libnetcdf hdf5
-pip install maturin
-
-git clone https://github.com/FahrenheitResearch/wrf-rust.git
-cd wrf-rust
-maturin develop --release
+pip install wrf-rust
 ```
+
+Pre-built wheels for Python 3.10-3.13 on Linux, macOS, and Windows. No Rust toolchain, no system libraries, no conda required.
 
 ## Usage
 
@@ -29,19 +22,19 @@ temp = getvar(f, "temp", units="degC")
 slp  = getvar(f, "slp",  units="hPa")
 wspd = getvar(f, "wspd", units="knots")
 
-# CAPE -- select your parcel type
-sbcape = getvar(f, "sbcape")                             # surface-based
-mlcape = getvar(f, "mlcape")                             # 100 hPa mixed-layer
-mucape = getvar(f, "mucape")                             # most unstable
-sb3cap = getvar(f, "sbcape", top_m=3000)                 # 0-3 km CAPE
+# CAPE with parcel selection
+sbcape = getvar(f, "sbcape")
+mlcape = getvar(f, "mlcape")
+mucape = getvar(f, "mucape")
+sb3cap = getvar(f, "sbcape", top_m=3000)           # 0-3 km CAPE
 
 # Custom parcel
 cape = getvar(f, "cape", parcel_pressure=850,
               parcel_temperature=20, parcel_dewpoint=15)
 
 # SRH with Bunkers storm motion
-srh1 = getvar(f, "srh1")                                 # 0-1 km
-srh3 = getvar(f, "srh3")                                 # 0-3 km
+srh1 = getvar(f, "srh1")                            # 0-1 km
+srh3 = getvar(f, "srh3")                            # 0-3 km
 srh  = getvar(f, "srh", depth_m=1500, storm_motion=(12, 8))
 
 # Effective inflow layer
@@ -49,19 +42,22 @@ eff_srh  = getvar(f, "effective_srh")
 eff_cape = getvar(f, "effective_cape")
 
 # Severe composites
-stp     = getvar(f, "stp")                                # fixed-layer
-stp_eff = getvar(f, "stp", layer_type="effective")        # effective-layer
+stp     = getvar(f, "stp")                           # fixed-layer
+stp_eff = getvar(f, "stp", layer_type="effective")   # effective-layer
 scp     = getvar(f, "scp")
-ehi     = getvar(f, "ehi", depth_m=3000)                  # 0-3 km EHI
+ehi     = getvar(f, "ehi", depth_m=3000)             # 0-3 km EHI
 
 # Configurable layers
 shear = getvar(f, "bulk_shear", bottom_m=1000, top_m=6000)
 mw    = getvar(f, "mean_wind",  bottom_m=0, top_m=6000)
-lr    = getvar(f, "lapse_rate", bottom_p=700, top_p=500)  # pressure-based
+lr    = getvar(f, "lapse_rate", bottom_p=700, top_p=500)
 lr_v  = getvar(f, "lapse_rate", bottom_m=0, top_m=3000, use_virtual=True)
 
+# Lake interpolation (removes 2m artifacts over water bodies)
+cape = getvar(f, "sbcape", lake_interp=1000)         # interp lakes < 1000 km2
+
 # All timesteps
-slp_all = getvar(f, "slp", timeidx=None)                  # shape (nt, ny, nx)
+slp_all = getvar(f, "slp", timeidx=None)             # shape (nt, ny, nx)
 ```
 
 Also accepts `netCDF4.Dataset` directly:
@@ -76,18 +72,14 @@ slp = getvar(Dataset("wrfout_d01..."), "slp")
 ```python
 from wrf import plot_field, plot_wind, plot_skewt, panel
 
-plot_field(f, "sbcape")                          # auto colormap + cartopy map
-plot_field(f, "slp", units="hPa")                # unit conversion
-plot_wind(f)                                      # wind barbs over speed fill
-plot_skewt(f, point=(35.0, -97.5))               # Skew-T with hodograph
-panel(f, ["sbcape", "srh1", "stp", "shear_0_6km"])  # multi-panel
-```
+plot_field(f, "sbcape")                               # auto colormap + cartopy
+plot_field(f, "sbcape", style="solar7")               # Solarpower07 colormaps
+plot_wind(f)                                           # wind barbs
+plot_skewt(f, point=(35.0, -97.5))                    # Skew-T with hodograph
+panel(f, ["sbcape", "srh1", "stp", "shear_0_6km"])   # multi-panel
 
-Multi-timestep rendering with consistent scales and GIF output:
-
-```python
+# Multi-timestep with consistent scale + GIF
 from wrf.plot import render_timesteps
-
 render_timesteps(f, "sbcape", timesteps=[0,1,2,3],
                  gif=True, fixed_scale=True)
 ```
@@ -101,216 +93,103 @@ python -m wrf plot  wrfout_d01_2024-06-01_00:00:00 slp -o slp.png
 python -m wrf panel wrfout_d01_2024-06-01_00:00:00 sbcape srh1 stp -o severe.png
 ```
 
+## Benchmark vs wrf-python
+
+Tested on a 199x199x79 WRF grid. All values match exactly (rel_err=0.00).
+
+| Variable | wrf-python | wrf-rust | Speedup |
+|---|---|---|---|
+| Temperature | 0.268s | 0.004s | **76x** |
+| Potential temp | 0.088s | 0.003s | **26x** |
+| Abs. vorticity | 0.173s | 0.015s | **11x** |
+| Relative humidity | 0.353s | 0.097s | **4x** |
+| Precipitable water | 0.224s | 0.077s | **3x** |
+| Reflectivity | 0.494s | 0.234s | **2x** |
+| SLP | 0.517s | 0.497s | 1x |
+| Wind destagger | 0.089s | 0.081s | 1x |
+
+Plus 17 variables wrf-python doesn't have (STP, SCP, EHI, critical angle, shear, Bunkers, lapse rates, fire indices, effective inflow layer).
+
 ## Variables
 
-80+ diagnostic variables. All support the `units=` parameter.
+83 diagnostic variables. All support `units=` parameter.
 
 ### Thermodynamics
 
-| Variable | Aliases | Units | Description |
-|---|---|---|---|
-| `temp` | `tk` | K | Temperature |
-| `tc` | `temp_c` | degC | Temperature (Celsius) |
-| `theta` | `th` | K | Potential temperature |
-| `theta_e` | `eth` | K | Equivalent potential temperature |
-| `theta_w` | | K | Wet-bulb potential temperature |
-| `tv` | | K | Virtual temperature |
-| `twb` | `wet_bulb` | K | Wet-bulb temperature |
-| `td` | `dp`, `dewpoint` | degC | Dewpoint |
-| `rh` | | % | Relative humidity |
+`temp` `tc` `theta` `theta_e` `theta_w` `tv` `twb` `td` `rh`
 
 ### Pressure & height
 
-| Variable | Aliases | Units | Description |
-|---|---|---|---|
-| `pressure` | `pres`, `p` | Pa | Full model pressure |
-| `slp` | `mslp` | hPa | Sea-level pressure |
-| `height` | `z` | m | Height MSL |
-| `height_agl` | `z_agl` | m | Height AGL |
-| `terrain` | `ter`, `hgt` | m | Terrain height |
-| `geopt` | | m2/s2 | Geopotential |
-| `omega` | | Pa/s | Vertical velocity (pressure coords) |
+`pressure` `slp` `height` `height_agl` `terrain` `geopt` `omega`
 
 ### Moisture
 
-| Variable | Aliases | Units | Description |
-|---|---|---|---|
-| `pw` | `precipitable_water` | mm | Precipitable water |
-| `rh2m` | `rh2` | % | 2-m relative humidity |
-| `dp2m` | `td2` | degC | 2-m dewpoint |
-| `mixing_ratio` | `qvapor` | kg/kg | Water vapor mixing ratio |
-| `specific_humidity` | `q` | kg/kg | Specific humidity |
+`pw` `rh2m` `dp2m` `mixing_ratio` `specific_humidity`
 
 ### CAPE & convection
 
-All CAPE variables support `top_m` for truncated integration (e.g. `top_m=3000` for 3CAPE).
+`sbcape` `sbcin` `mlcape` `mlcin` `mucape` `mucin` `cape` `cin` `lcl` `lfc` `el` `effective_cape` `effective_inflow` `cape2d` `cape3d`
 
-| Variable | Units | Description |
-|---|---|---|
-| `sbcape` / `sbcin` | J/kg | Surface-based CAPE/CIN |
-| `mlcape` / `mlcin` | J/kg | Mixed-layer CAPE/CIN (100 hPa) |
-| `mucape` / `mucin` | J/kg | Most-unstable CAPE/CIN |
-| `cape` / `cin` | J/kg | Generic (accepts `parcel_type` or custom parcel) |
-| `lcl` / `lfc` / `el` | m | LCL / LFC / EL height AGL |
-| `effective_cape` | J/kg | MUCAPE within effective inflow layer |
-| `effective_inflow` | m | Effective inflow base/top heights |
+All CAPE variables support `top_m` for truncated integration (e.g. `top_m=3000` for 3CAPE). Generic `cape`/`cin` accept `parcel_type` or custom parcel (`parcel_pressure`, `parcel_temperature`, `parcel_dewpoint`).
 
 ### Wind
 
-| Variable | Aliases | Units | Description |
-|---|---|---|---|
-| `ua` / `va` / `wa` | | m/s | Destaggered U/V/W wind |
-| `wspd` / `wdir` | | m/s, deg | Wind speed / direction |
-| `wspd10` / `wdir10` | | m/s, deg | 10-m wind speed / direction |
-| `uvmet` / `uvmet10` | | m/s | Earth-rotated wind components |
+`ua` `va` `wa` `wspd` `wdir` `wspd10` `wdir10` `uvmet` `uvmet10`
 
 ### SRH & shear
 
-SRH uses Bunkers Internal Dynamics method. All accept `storm_motion=(u,v)` for custom motion.
+`srh1` `srh3` `srh` `effective_srh` `shear_0_1km` `shear_0_6km` `bulk_shear` `mean_wind` `bunkers_rm` `bunkers_lm` `mean_wind_0_6km`
 
-| Variable | Units | Description |
-|---|---|---|
-| `srh1` / `srh3` | m2/s2 | 0-1 / 0-3 km SRH |
-| `srh` | m2/s2 | Configurable depth via `depth_m` |
-| `effective_srh` | m2/s2 | SRH over effective inflow layer |
-| `shear_0_1km` / `shear_0_6km` | m/s | Fixed-layer bulk shear |
-| `bulk_shear` | m/s | Configurable via `bottom_m` / `top_m` |
-| `mean_wind` | m/s | Configurable via `bottom_m` / `top_m` |
-| `bunkers_rm` / `bunkers_lm` | m/s | Bunkers right/left-mover motion |
+SRH uses Bunkers Internal Dynamics method. All accept `storm_motion=(u,v)`.
 
 ### Severe composites
 
-| Variable | Description |
-|---|---|
-| `stp` | Significant Tornado Parameter (fixed or `layer_type="effective"`) |
-| `scp` | Supercell Composite Parameter |
-| `ehi` | Energy-Helicity Index (configurable SRH depth via `depth_m`) |
-| `critical_angle` | Critical angle |
-| `ship` | Significant Hail Parameter |
-| `bri` | Bulk Richardson Number |
+`stp` `stp_fixed` `stp_effective` `scp` `ehi` `critical_angle` `ship` `bri`
+
+STP supports `layer_type="effective"` for the 5-term formula with MLCIN.
 
 ### Radar & cloud
 
-| Variable | Units | Description |
-|---|---|---|
-| `dbz` / `maxdbz` | dBZ | Simulated / composite reflectivity |
-| `ctt` | degC | Cloud-top temperature |
-| `cloudfrac` | % | Cloud fraction (low/mid/high) |
-| `uhel` | m2/s2 | Updraft helicity (configurable `bottom_m`/`top_m`) |
+`dbz` `maxdbz` `ctt` `cloudfrac` `uhel`
 
 ### Vorticity
 
-| Variable | Units | Description |
-|---|---|---|
-| `avo` | s-1 | Absolute vorticity |
-| `pvo` | PVU | Potential vorticity |
+`avo` `pvo`
 
 ### Lapse rates & levels
 
-| Variable | Units | Description |
-|---|---|---|
-| `lapse_rate_700_500` | degC/km | 700-500 hPa lapse rate |
-| `lapse_rate_0_3km` | degC/km | 0-3 km lapse rate |
-| `lapse_rate` | degC/km | Configurable (`bottom_m`/`top_m` or `bottom_p`/`top_p`, `use_virtual`) |
-| `freezing_level` | m | Freezing level AGL |
-| `wet_bulb_0` | m | Wet-bulb zero height AGL |
+`lapse_rate_700_500` `lapse_rate_0_3km` `lapse_rate` `freezing_level` `wet_bulb_0`
+
+Generic `lapse_rate` accepts `bottom_m`/`top_m` or `bottom_p`/`top_p`, plus `use_virtual=True`.
 
 ### Fire weather
 
-| Variable | Description |
+`fosberg` `haines` `hdw`
+
+## Parameters
+
+| Parameter | Description |
 |---|---|
-| `fosberg` | Fosberg Fire Weather Index |
-| `haines` | Haines Index |
-| `hdw` | Hot-Dry-Windy Index |
-
-## Configurable parameters
-
-Many variables have both hardcoded convenience names and generic configurable versions.
-
-| Parameter | Type | Description |
-|---|---|---|
-| `units` | `str` | Output unit conversion (works on every variable) |
-| `parcel_type` | `str` | `"sb"`, `"ml"`, `"mu"` for CAPE variables |
-| `parcel_pressure` | `float` | Custom parcel pressure (hPa) |
-| `parcel_temperature` | `float` | Custom parcel temperature (degC) |
-| `parcel_dewpoint` | `float` | Custom parcel dewpoint (degC) |
-| `top_m` | `float` | Top of layer in m AGL |
-| `bottom_m` | `float` | Bottom of layer in m AGL |
-| `top_p` | `float` | Top of layer in hPa (lapse rates) |
-| `bottom_p` | `float` | Bottom of layer in hPa (lapse rates) |
-| `depth_m` | `float` | SRH/EHI integration depth (m AGL) |
-| `storm_motion` | `(u, v)` | Custom storm motion in m/s |
-| `layer_type` | `str` | `"fixed"` or `"effective"` for STP |
-| `use_virtual` | `bool` | Virtual temperature for lapse rates |
-
-## Unit conversion
-
-Every variable supports `units=`. Case-insensitive.
-
-| Category | Strings |
-|---|---|
-| Temperature | `K`, `degC`, `degF`, `celsius`, `fahrenheit` |
-| Pressure | `Pa`, `hPa`, `mb`, `inHg` |
-| Speed | `m/s`, `knots`, `kt`, `mph`, `kph` |
-| Length | `m`, `ft`, `km`, `mi` |
-| Moisture | `kg/kg`, `g/kg` |
-| Depth | `mm`, `in` |
+| `units` | Output unit conversion (every variable) |
+| `parcel_type` | `"sb"`, `"ml"`, `"mu"` for CAPE |
+| `parcel_pressure/temperature/dewpoint` | Custom parcel (hPa, degC, degC) |
+| `top_m` / `bottom_m` | Layer bounds in m AGL |
+| `top_p` / `bottom_p` | Layer bounds in hPa |
+| `depth_m` | SRH/EHI depth (m AGL) |
+| `storm_motion` | Custom (u, v) in m/s |
+| `layer_type` | `"fixed"` or `"effective"` for STP |
+| `use_virtual` | Virtual temperature for lapse rates |
+| `lake_interp` | Interpolate 2m fields over lakes < N km2 |
 
 ## Building from source
 
-### Prerequisites
-
-1. **Rust** -- [rustup.rs](https://rustup.rs/)
-2. **libnetcdf + libhdf5** -- `conda install -c conda-forge libnetcdf hdf5`
-3. **maturin** -- `pip install maturin`
-4. **wx-math + metrust** -- the meteorological math libraries:
-   ```bash
-   git clone https://github.com/FahrenheitResearch/rustmet.git ~/rustmet
-   git clone https://github.com/FahrenheitResearch/metrust.git ~/metrust
-   ```
-
-### Build
+Only needed for development. Users should `pip install wrf-rust`.
 
 ```bash
 git clone https://github.com/FahrenheitResearch/wrf-rust.git
 cd wrf-rust
+pip install maturin
 maturin develop --release
-```
-
-Update `crates/wrf-core/Cargo.toml` if your wx-math/metrust paths differ. Update `.cargo/config.toml` for HDF5/NetCDF library paths.
-
-### Windows
-
-The `.cargo/config.toml` points to conda's `wrfplot` environment for HDF5/NetCDF. The Python module auto-discovers DLL paths from common conda locations on import.
-
-## Architecture
-
-```
-wrf-rust/
-  crates/wrf-core/         Pure Rust library
-    src/
-      file.rs              NetCDF reading + field caching
-      grid.rs              Arakawa C-grid destaggering
-      variables.rs         Variable registry (80+ entries)
-      compute.rs           getvar dispatch + unit conversion
-      diag/                12 diagnostic modules
-        cape.rs            SB/ML/MU CAPE, custom parcels, effective inflow
-        srh.rs             Bunkers SRH, effective SRH, shear, mean wind
-        severe.rs          STP (fixed + effective), SCP, EHI, critical angle
-        thermo.rs          Temperature variants, theta-e, dewpoint, RH
-        pressure.rs        SLP, height, omega, geopotential
-        wind.rs            Destaggering, rotation, speed/direction
-        moisture.rs        PW, mixing ratio, 2m fields
-        radar.rs           Simulated reflectivity
-        cloud.rs           Cloud-top temp, cloud fraction
-        vorticity.rs       Absolute and potential vorticity
-        helicity.rs        Updraft helicity
-        extra.rs           Lapse rates, freezing level, fire indices
-  src/                     PyO3 bindings
-  python/wrf/              Python API
-    __init__.py            getvar, WrfFile, ALL_TIMES
-    plot.py                Plotting (matplotlib + cartopy)
-    cli.py                 CLI (python -m wrf)
 ```
 
 ## License
