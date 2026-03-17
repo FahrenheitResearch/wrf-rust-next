@@ -12,6 +12,16 @@ pub fn compute_t2(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f6
     f.t2_for_opts(t, opts)
 }
 
+/// 2-m virtual temperature (K). `[ny, nx]`
+/// Tv = T2 * (1 + 0.61 * Q2). Supports lake_interp.
+pub fn compute_tv2m(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
+    let t2 = f.t2_for_opts(t, opts)?;
+    let q2 = f.q2_for_opts(t, opts)?;
+    Ok(t2.iter().zip(q2.iter())
+        .map(|(tk, q)| tk * (1.0 + 0.61 * q.max(0.0)))
+        .collect())
+}
+
 /// Temperature (K). `[nz, ny, nx]`
 pub fn compute_temp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     f.temperature(t)

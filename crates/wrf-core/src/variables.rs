@@ -90,6 +90,14 @@ pub static VARS: &[VarDef] = &[
         compute: dthermo::compute_t2,
     },
     VarDef {
+        name: "tv2m",
+        aliases: &["virtual_temperature_2m"],
+        description: "2-m virtual temperature",
+        default_units: "K",
+        dim: VarDim::TwoD,
+        compute: dthermo::compute_tv2m,
+    },
+    VarDef {
         name: "temp",
         aliases: &["tk"],
         description: "Temperature",
