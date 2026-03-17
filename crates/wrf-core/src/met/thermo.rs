@@ -486,12 +486,20 @@ pub fn cape_cin_core(
     // --- PASS 2: Integration ---
     let mut p_top_limit = el_p;
     if let Some(top_m_val) = top_m {
-        // Reverse profiles for height->pressure lookup
-        let h_rev: Vec<f64> = height_agl.iter().copied().rev().collect();
-        let p_rev: Vec<f64> = p_prof.iter().copied().rev().collect();
-        let p_top_m = get_height_at_pres(top_m_val, &h_rev, &p_rev);
-        if p_top_m >= p_top_limit {
-            p_top_limit = p_top_m.max(p_prof[p_prof.len() - 1]);
+        // Find the pressure at the target height AGL
+        // Interpolate: given height_agl profile and p_prof, find p at top_m_val
+        let mut p_at_top = p_prof[p_prof.len() - 1]; // default: model top
+        for i in 0..height_agl.len() - 1 {
+            if height_agl[i] <= top_m_val && top_m_val <= height_agl[i + 1] {
+                let frac = (top_m_val - height_agl[i]) / (height_agl[i + 1] - height_agl[i]);
+                p_at_top = p_prof[i] + frac * (p_prof[i + 1] - p_prof[i]);
+                break;
+            }
+        }
+        // For 3CAPE: stop at 3km, which is a HIGHER pressure (closer to surface)
+        // than the EL. Use the larger pressure value (lower altitude) as the cap.
+        if p_at_top > p_top_limit || p_top_limit <= 0.0 {
+            p_top_limit = p_at_top;
         }
     }
 
