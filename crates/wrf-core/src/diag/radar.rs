@@ -15,8 +15,15 @@ const RD: f64 = 287.058;
 
 /// Simulated reflectivity (dBZ). `[nz, ny, nx]`
 ///
-/// Uses Smith (1984) formulation: Z = f(qr, qs, qg, rho_air)
+/// Prefers WRF's native REFL_10CM if available (computed by microphysics scheme).
+/// Falls back to Smith (1984) formulation: Z = f(qr, qs, qg, rho_air).
 pub fn compute_dbz(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
+    // Prefer WRF's native reflectivity if available
+    if let Ok(refl) = f.read_var("REFL_10CM", t) {
+        if refl.len() == f.nxyz() {
+            return Ok(refl);
+        }
+    }
     let tk = f.temperature(t)?;
     let pres = f.full_pressure(t)?;
     let qv = f.qvapor(t)?;

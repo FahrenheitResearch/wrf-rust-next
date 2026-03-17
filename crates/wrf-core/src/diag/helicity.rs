@@ -8,9 +8,19 @@ use crate::file::WrfFile;
 
 /// Updraft helicity (m^2/s^2). `[ny, nx]`
 ///
-/// UH = integral from z_bot to z_top of (w * zeta_z) dz
-/// Default layer: 2-5 km AGL.
+/// Prefers WRF's native UP_HELI_MAX if available (accumulated at every
+/// dynamics timestep, captures peaks between output times).
+/// Falls back to instantaneous computation: UH = integral of (w * zeta_z) dz
+/// over 2-5 km AGL (default).
 pub fn compute_uhel(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
+    // Prefer WRF's native max updraft helicity if available and no custom layer
+    if opts.bottom_m.is_none() && opts.top_m.is_none() {
+        if let Ok(uh) = f.read_var("UP_HELI_MAX", t) {
+            if uh.len() == f.nxy() {
+                return Ok(uh);
+            }
+        }
+    }
     let w = f.w_destag(t)?;
     let u = f.u_destag(t)?;
     let v = f.v_destag(t)?;
