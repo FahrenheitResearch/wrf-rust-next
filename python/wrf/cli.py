@@ -322,10 +322,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", title="commands")
 
-    # ── tui ──
-    p_tui = sub.add_parser("tui", help="Launch interactive terminal explorer.")
-    p_tui.add_argument("file", nargs="?", default=None, help="Path to WRF output file.")
-
     # ── info ──
     p_info = sub.add_parser("info", help="Print file metadata and grid info.")
     p_info.add_argument("file", help="Path to WRF output file.")
@@ -369,13 +365,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(0)
 
-    def cmd_tui(a):
-        from wrf.tui import WrfTui
-        app = WrfTui(a.file)
-        app.run()
-
     dispatch = {
-        "tui": cmd_tui,
         "info": cmd_info,
         "plot": cmd_plot,
         "panel": cmd_panel,
