@@ -245,25 +245,37 @@ impl PureRustFile {
             // Skip 4 bytes reserved (pos + 20..24)
 
             // For cache_type 1, scratch-pad contains B-tree address and local heap address
-            let (btree_addr, local_heap_addr) = if cache_type == 1 {
+            // Check if root OHDR is v2 (hybrid: v0 superblock + v2 object headers)
+            let ohdr_sig = read_bytes(&reader, root_ohdr_addr, 4)?;
+            let is_v2_ohdr = ohdr_sig == OHDR_SIGNATURE;
+
+            let (datasets, global_attrs) = if is_v2_ohdr {
+                // v0 superblock but v2 root group object header -- use v2 path
+                // This handles hybrid files (common with certain NetCDF library versions)
+                let datasets = Self::read_group_links_static(&reader, root_ohdr_addr)?;
+                let global_attrs = Self::read_attributes_static(&reader, root_ohdr_addr)?;
+                (datasets, global_attrs)
+            } else if cache_type == 1 {
                 let bt = read_u64(&reader, pos + 24)?;
                 let lh = read_u64(&reader, pos + 32)?;
-                (bt, lh)
+                let datasets = Self::read_group_v0_static(
+                    &reader, bt, lh, base_addr,
+                )?;
+                let global_attrs = Self::read_attributes_v1_ohdr_static(
+                    &reader, root_ohdr_addr, base_addr,
+                )?;
+                (datasets, global_attrs)
             } else {
-                // No cached symbol table info; read the object header to find
-                // the symbol table message
-                Self::find_symbol_table_from_ohdr(&reader, root_ohdr_addr, base_addr)?
+                // cache_type=0 with v1 OHDR: find symbol table in OHDR
+                let (bt, lh) = Self::find_symbol_table_from_ohdr(&reader, root_ohdr_addr, base_addr)?;
+                let datasets = Self::read_group_v0_static(
+                    &reader, bt, lh, base_addr,
+                )?;
+                let global_attrs = Self::read_attributes_v1_ohdr_static(
+                    &reader, root_ohdr_addr, base_addr,
+                )?;
+                (datasets, global_attrs)
             };
-
-            // Read root group children via B-tree v1 + SNOD + local heap
-            let datasets = Self::read_group_v0_static(
-                &reader, btree_addr, local_heap_addr, base_addr,
-            )?;
-
-            // Read global attributes from root object header (v1 OHDR)
-            let global_attrs = Self::read_attributes_v1_ohdr_static(
-                &reader, root_ohdr_addr, base_addr,
-            )?;
 
             Ok(PureRustFile {
                 reader,
