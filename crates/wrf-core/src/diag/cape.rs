@@ -37,23 +37,21 @@ fn compute_cape_fields(
     let nz = f.nz;
     let nxy = nx * ny;
 
-    // Convert pressure from Pa to hPa for thermo functions
-    let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
-    // Convert surface pressure from Pa to hPa
-    let psfc_hpa: Vec<f64> = psfc.iter().map(|p| p / 100.0).collect();
-    // Convert T2 from K to C
-    let t2_c: Vec<f64> = t2.iter().map(|t| t - 273.15).collect();
-
+    // compute_cape_cin expects Pa pressure and K temperature -- it converts
+    // internally.  Do NOT pre-convert here.
     // Use crate::met's grid-parallel CAPE computation if no top_m specified
     if top_m.is_none() {
         let (cape, cin, lcl, lfc) = crate::met::composite::compute_cape_cin(
-            &pres_hpa, &tc, &qv, &h_agl, &psfc_hpa, &t2_c, &q2,
+            &pres, &tc, &qv, &h_agl, &psfc, &t2, &q2,
             nx, ny, nz, parcel_type,
         );
         return Ok((cape, cin, lcl, lfc));
     }
 
     // With top_m: use column-by-column cape_cin_core
+    // Need hPa pressure for the dewpoint formula; compute it locally.
+    let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
+
     let mut cape = vec![0.0f64; nxy];
     let mut cin = vec![0.0f64; nxy];
     let mut lcl = vec![0.0f64; nxy];
@@ -65,7 +63,8 @@ fn compute_cape_fields(
         .zip(lfc.par_iter_mut())
         .enumerate()
         .for_each(|(ij, (((cape_v, cin_v), lcl_v), lfc_v))| {
-            // Extract column profiles
+            // Extract column profiles -- pass Pa pressure to cape_cin_core
+            // which auto-detects units.
             let mut p_prof = Vec::with_capacity(nz);
             let mut t_prof = Vec::with_capacity(nz);
             let mut td_prof = Vec::with_capacity(nz);
@@ -73,20 +72,22 @@ fn compute_cape_fields(
 
             for k in 0..nz {
                 let idx = k * nxy + ij;
-                p_prof.push(pres_hpa[idx]);
+                p_prof.push(pres[idx]); // Pa -- cape_cin_core auto-detects
                 t_prof.push(tc[idx]);
-                // Compute Td from q and p
+                // Compute Td from q and p (dewpoint formula needs hPa)
                 let q = qv[idx].max(1e-10);
-                let e = q * pres_hpa[idx] / (0.622 + q);
+                let p_hpa = pres_hpa[idx];
+                let e = q * p_hpa / (0.622 + q);
                 let ln_e = (e / 6.112).max(1e-10).ln();
                 let td = (243.5 * ln_e) / (17.67 - ln_e);
                 td_prof.push(td);
                 h_prof.push(h_agl[idx]);
             }
 
+            // Pass Pa/K values -- cape_cin_core auto-detects and converts
             let (c, ci, l, lf) = crate::met::thermo::cape_cin_core(
                 &p_prof, &t_prof, &td_prof, &h_prof,
-                psfc_hpa[ij], t2_c[ij], td_prof.first().copied().unwrap_or(0.0),
+                psfc[ij], t2[ij], td_prof.first().copied().unwrap_or(0.0),
                 parcel_type, 100.0, 300.0, top_m,
             );
 
@@ -153,12 +154,15 @@ pub fn compute_el(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f6
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
+    let psfc_raw = f.psfc(t)?;
+    let t2_raw = f.t2(t)?;
+    let q2 = f.q2(t)?;
 
     let nx = f.nx;
     let ny = f.ny;
     let nz = f.nz;
     let nxy = nx * ny;
-    let _pt = resolve_parcel_type(opts, "sb");
+    let pt = resolve_parcel_type(opts, "sb");
 
     let mut el = vec![0.0f64; nxy];
     el.par_iter_mut().enumerate().for_each(|(ij, el_v)| {
@@ -178,10 +182,47 @@ pub fn compute_el(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f6
             h_prof.push(h_agl[idx]);
         }
 
-        // Use crate::met el function — returns Option<(p_el, t_el)>
-        if let Some((el_pres, _t_el)) = crate::met::thermo::el(&p_prof, &t_prof, &td_prof) {
-            if el_pres > 0.0 {
-                *el_v = crate::met::thermo::get_height_at_pres(el_pres, &p_prof, &h_prof);
+        // Select parcel based on parcel_type, then build a modified profile
+        // with the parcel at the base for the el() function.
+        let psfc_hpa = psfc_raw[ij] / 100.0;
+        let t2_c = t2_raw[ij] - 273.15;
+        let q2_v = q2[ij].max(1e-10);
+        let e2 = q2_v * psfc_hpa / (0.622 + q2_v);
+        let ln_e2 = (e2 / 6.112).max(1e-10).ln();
+        let td2_c = (243.5 * ln_e2) / (17.67 - ln_e2);
+
+        // Prepend surface data for parcel selection
+        let mut full_p = vec![psfc_hpa];
+        let mut full_t = vec![t2_c];
+        let mut full_td = vec![td2_c];
+        full_p.extend_from_slice(&p_prof);
+        full_t.extend_from_slice(&t_prof);
+        full_td.extend_from_slice(&td_prof);
+
+        // Select the parcel based on type
+        let (p_parcel, t_parcel, td_parcel) = match pt.as_str() {
+            "ml" => crate::met::thermo::get_mixed_layer_parcel(&full_p, &full_t, &full_td, 100.0),
+            "mu" => crate::met::thermo::get_most_unstable_parcel(&full_p, &full_t, &full_td, 300.0),
+            _ => (psfc_hpa, t2_c, td2_c), // "sb"
+        };
+
+        // Build profile starting from the parcel level
+        let mut mod_p = vec![p_parcel];
+        let mut mod_t = vec![t_parcel];
+        let mut mod_td = vec![td_parcel];
+        for k in 0..p_prof.len() {
+            if p_prof[k] < p_parcel {
+                mod_p.push(p_prof[k]);
+                mod_t.push(t_prof[k]);
+                mod_td.push(td_prof[k]);
+            }
+        }
+
+        if mod_p.len() >= 2 {
+            if let Some((el_pres, _t_el)) = crate::met::thermo::el(&mod_p, &mod_t, &mod_td) {
+                if el_pres > 0.0 {
+                    *el_v = crate::met::thermo::get_height_at_pres(el_pres, &p_prof, &h_prof);
+                }
             }
         }
     });
@@ -299,9 +340,29 @@ fn compute_cape_fields_custom(
                 h_prof.push(h_agl[idx]);
             }
 
-            // Use "sb" parcel type but pass custom parcel values as psfc/t2m/td2m
+            // Filter profile to only include levels at and above the custom
+            // parcel pressure so the profile is monotonically decreasing.
+            let mut filt_p = Vec::new();
+            let mut filt_t = Vec::new();
+            let mut filt_td = Vec::new();
+            let mut filt_h = Vec::new();
+            for k in 0..p_prof.len() {
+                if p_prof[k] <= parcel_p_hpa {
+                    filt_p.push(p_prof[k]);
+                    filt_t.push(t_prof[k]);
+                    filt_td.push(td_prof[k]);
+                    filt_h.push(h_prof[k]);
+                }
+            }
+
+            if filt_p.len() < 2 {
+                // Not enough levels above custom parcel -- skip
+                return;
+            }
+
+            // Use "sb" parcel type with the custom parcel as the surface
             let (c, ci, l, lf) = crate::met::thermo::cape_cin_core(
-                &p_prof, &t_prof, &td_prof, &h_prof,
+                &filt_p, &filt_t, &filt_td, &filt_h,
                 parcel_p_hpa, parcel_t_c, parcel_td_c,
                 "sb", 100.0, 300.0, top_m,
             );
@@ -443,8 +504,10 @@ pub fn compute_el_generic(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
 
 /// Compute the effective inflow layer bounds for each grid column.
 ///
-/// Returns a flat vector of length `2 * nxy` with interleaved
-/// `[eff_base_height, eff_top_height]` in meters AGL.
+/// Returns a flat vector of length `2 * nxy` with base heights as the first
+/// contiguous plane followed by top heights as the second plane:
+/// `[base_0, base_1, ..., base_{nxy-1}, top_0, top_1, ..., top_{nxy-1}]`
+/// in meters AGL.
 ///
 /// Effective inflow base: lowest model level where a parcel lifted from that level
 /// produces CAPE >= 100 J/kg AND CIN >= -250 J/kg.
@@ -466,9 +529,14 @@ pub fn compute_effective_inflow_layer(
     let nz = f.nz;
     let nxy = nx * ny;
 
-    let mut result = vec![0.0f64; 2 * nxy];
+    // Output as two contiguous planes: [base_plane..., top_plane...]
+    let mut base_plane = vec![0.0f64; nxy];
+    let mut top_plane = vec![0.0f64; nxy];
 
-    result.par_chunks_mut(2).enumerate().for_each(|(ij, out)| {
+    base_plane.par_iter_mut()
+        .zip(top_plane.par_iter_mut())
+        .enumerate()
+        .for_each(|(ij, (base_out, top_out))| {
         // Extract column profiles
         let mut p_prof = Vec::with_capacity(nz);
         let mut t_prof = Vec::with_capacity(nz);
@@ -521,7 +589,7 @@ pub fn compute_effective_inflow_layer(
         }
 
         if let (Some(base_k), Some(_top_k)) = (eff_base, eff_top) {
-            out[0] = h_prof[base_k]; // effective inflow base height AGL
+            *base_out = h_prof[base_k]; // effective inflow base height AGL
 
             // Effective inflow top = EL of the most-unstable parcel in the layer
             if let Some(mu_k) = mu_level {
@@ -534,17 +602,20 @@ pub fn compute_effective_inflow_layer(
                     crate::met::thermo::el(mu_p_prof, mu_t_prof, mu_td_prof)
                 {
                     if el_pres > 0.0 {
-                        out[1] = crate::met::thermo::get_height_at_pres(
+                        *top_out = crate::met::thermo::get_height_at_pres(
                             el_pres, &p_prof, &h_prof,
                         );
                     }
                 }
-                // If el() returned None, out[1] stays 0.0
+                // If el() returned None, top stays 0.0
             }
         }
-        // If no effective layer found, both out[0] and out[1] remain 0.0
+        // If no effective layer found, both base and top remain 0.0
     });
 
+    // Concatenate: base plane then top plane
+    let mut result = base_plane;
+    result.extend(top_plane);
     Ok(result)
 }
 

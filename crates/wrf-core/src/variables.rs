@@ -62,14 +62,9 @@ pub static VARS: &[VarDef] = &[
         dim: VarDim::ThreeD,
         compute: dpres::compute_height_agl,
     },
-    VarDef {
-        name: "zstag",
-        aliases: &["height_stag"],
-        description: "Height on staggered vertical levels",
-        default_units: "m",
-        dim: VarDim::ThreeD,
-        compute: dpres::compute_zstag,
-    },
+    // NOTE: zstag and geopt_stag are omitted from the registry because they
+    // return nz_stag levels but VarDim::ThreeD implies [nz, ny, nx], causing
+    // reshape failures.  They can still be accessed via the raw variable path.
     VarDef {
         name: "geopt",
         aliases: &["geopotential"],
@@ -77,14 +72,6 @@ pub static VARS: &[VarDef] = &[
         default_units: "m2/s2",
         dim: VarDim::ThreeD,
         compute: dpres::compute_geopt,
-    },
-    VarDef {
-        name: "geopt_stag",
-        aliases: &["geopotential_stag"],
-        description: "Geopotential on staggered Z levels",
-        default_units: "m2/s2",
-        dim: VarDim::ThreeD,
-        compute: dpres::compute_geopt_stag,
     },
     VarDef {
         name: "terrain",

@@ -19,6 +19,7 @@ pub enum WrfUnits {
     Kph,
     // Length / height
     Meters,
+    Decameters,
     Feet,
     Kilometers,
     Miles,
@@ -68,6 +69,7 @@ pub fn parse_units(s: &str) -> WrfResult<WrfUnits> {
         "kph" | "km/h" | "kmh" => Ok(WrfUnits::Kph),
         // Length
         "m" | "meters" | "meter" => Ok(WrfUnits::Meters),
+        "dam" | "decameters" | "decameter" | "dkm" => Ok(WrfUnits::Decameters),
         "ft" | "feet" | "foot" => Ok(WrfUnits::Feet),
         "km" | "kilometers" => Ok(WrfUnits::Kilometers),
         "mi" | "miles" => Ok(WrfUnits::Miles),
@@ -142,12 +144,20 @@ pub fn convert_value(value: f64, from: WrfUnits, to: WrfUnits) -> WrfResult<f64>
         (WrfUnits::Kph, WrfUnits::Mph) => Ok(value / 1.60934),
 
         // ── Length ──
+        (WrfUnits::Meters, WrfUnits::Decameters) => Ok(value / 10.0),
+        (WrfUnits::Decameters, WrfUnits::Meters) => Ok(value * 10.0),
         (WrfUnits::Meters, WrfUnits::Feet) => Ok(value / 0.3048),
         (WrfUnits::Feet, WrfUnits::Meters) => Ok(value * 0.3048),
         (WrfUnits::Meters, WrfUnits::Kilometers) => Ok(value / 1000.0),
         (WrfUnits::Kilometers, WrfUnits::Meters) => Ok(value * 1000.0),
         (WrfUnits::Meters, WrfUnits::Miles) => Ok(value / 1609.344),
         (WrfUnits::Miles, WrfUnits::Meters) => Ok(value * 1609.344),
+        (WrfUnits::Decameters, WrfUnits::Feet) => Ok(value * 10.0 / 0.3048),
+        (WrfUnits::Feet, WrfUnits::Decameters) => Ok(value * 0.3048 / 10.0),
+        (WrfUnits::Decameters, WrfUnits::Kilometers) => Ok(value / 100.0),
+        (WrfUnits::Kilometers, WrfUnits::Decameters) => Ok(value * 100.0),
+        (WrfUnits::Decameters, WrfUnits::Miles) => Ok(value * 10.0 / 1609.344),
+        (WrfUnits::Miles, WrfUnits::Decameters) => Ok(value * 1609.344 / 10.0),
         (WrfUnits::Feet, WrfUnits::Kilometers) => Ok(value * 0.3048 / 1000.0),
         (WrfUnits::Kilometers, WrfUnits::Feet) => Ok(value * 1000.0 / 0.3048),
         (WrfUnits::Feet, WrfUnits::Miles) => Ok(value / 5280.0),

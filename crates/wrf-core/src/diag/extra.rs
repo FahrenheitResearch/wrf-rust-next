@@ -8,19 +8,47 @@ use crate::error::WrfResult;
 use crate::file::WrfFile;
 
 /// 700-500 hPa lapse rate (°C/km). `[ny, nx]`
+///
+/// Uses pressure-based interpolation at 700 and 500 hPa levels.
 pub fn compute_lapse_rate_700_500(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let tc = f.temperature_c(t)?;
-    let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
-    let _pres_hpa = f.pressure_hpa(t)?;
+    let pres_hpa = f.pressure_hpa(t)?;
 
     let nx = f.nx;
     let ny = f.ny;
     let nz = f.nz;
+    let nxy = nx * ny;
 
-    Ok(crate::met::composite::compute_lapse_rate(
-        &tc, &qv, &h_agl, nx, ny, nz, 700.0, 500.0,
-    ))
+    let mut lr = vec![0.0f64; nxy];
+    lr.par_iter_mut().enumerate().for_each(|(ij, lr_val)| {
+        // Interpolate temperature and height at 700 hPa and 500 hPa
+        let interp_at_p = |target_p: f64| -> (f64, f64) {
+            for k in 0..nz - 1 {
+                let idx0 = k * nxy + ij;
+                let idx1 = (k + 1) * nxy + ij;
+                let p0 = pres_hpa[idx0];
+                let p1 = pres_hpa[idx1];
+                if p0 >= target_p && p1 < target_p {
+                    let frac = (target_p - p1) / (p0 - p1);
+                    let t_interp = tc[idx1] + frac * (tc[idx0] - tc[idx1]);
+                    let h_interp = h_agl[idx1] + frac * (h_agl[idx0] - h_agl[idx1]);
+                    return (t_interp, h_interp);
+                }
+            }
+            // Fallback: nearest level
+            (tc[ij], h_agl[ij])
+        };
+
+        let (t_700, h_700) = interp_at_p(700.0);
+        let (t_500, h_500) = interp_at_p(500.0);
+        let depth_km = (h_500 - h_700).abs() / 1000.0;
+        if depth_km > 0.01 {
+            *lr_val = -(t_500 - t_700) / depth_km;
+        }
+    });
+
+    Ok(lr)
 }
 
 /// 0-3 km AGL lapse rate (°C/km). `[ny, nx]`

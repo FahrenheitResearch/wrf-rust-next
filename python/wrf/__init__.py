@@ -60,7 +60,7 @@ __all__ = [
     "get_cartopy",
     "latlon_coords",
 ]
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 # ── Optional plotting imports (require matplotlib) ──
 try:
@@ -437,9 +437,11 @@ def get_cartopy(wrffile):
 
     Drop-in replacement for ``wrf.get_cartopy()`` from wrf-python.
 
-    Reads the ``MAP_PROJ``, ``TRUELAT1``, ``TRUELAT2``, ``STAND_LON``,
-    ``CEN_LAT``, and ``CEN_LON`` global attributes from the WRF file
-    and returns the corresponding ``cartopy.crs`` projection.
+    First tries to read ``MAP_PROJ``, ``TRUELAT1``, ``TRUELAT2``,
+    ``STAND_LON``, ``CEN_LAT``, and ``CEN_LON`` global attributes via
+    netCDF4 (if available).  Falls back to inferring the projection from
+    the lat/lon arrays in the Rust WrfFile handle when netCDF4 is not
+    installed.
 
     Parameters
     ----------
@@ -459,49 +461,88 @@ def get_cartopy(wrffile):
         If the map projection is not supported.
     """
     import cartopy.crs as ccrs
-    from netCDF4 import Dataset
 
-    # Get the file path so we can read global attributes via netCDF4
     wf = _ensure_wrffile(wrffile)
-    nc = Dataset(wf.path, "r")
-    try:
-        map_proj = int(nc.getncattr("MAP_PROJ"))
-        truelat1 = float(nc.getncattr("TRUELAT1"))
-        truelat2 = float(nc.getncattr("TRUELAT2"))
-        stand_lon = float(nc.getncattr("STAND_LON"))
-        cen_lat = float(nc.getncattr("CEN_LAT"))
-        cen_lon = float(nc.getncattr("CEN_LON"))
-    finally:
-        nc.close()
 
-    if map_proj == 1:
-        # Lambert Conformal Conic
-        return ccrs.LambertConformal(
-            central_longitude=stand_lon,
-            central_latitude=cen_lat,
-            standard_parallels=(truelat1, truelat2),
-        )
-    elif map_proj == 2:
-        # Polar Stereographic
-        return ccrs.Stereographic(
-            central_latitude=cen_lat,
-            central_longitude=stand_lon,
-            true_scale_latitude=truelat1,
-        )
-    elif map_proj == 3:
-        # Mercator
-        return ccrs.Mercator(
-            central_longitude=cen_lon,
-            latitude_true_scale=truelat1,
-        )
-    elif map_proj == 6:
-        # Lat-Lon (cylindrical equidistant)
+    # --- Try reading global attributes via netCDF4 (optional) ---
+    try:
+        from netCDF4 import Dataset as _NCDataset
+
+        nc = _NCDataset(wf.path, "r")
+        try:
+            map_proj = int(nc.getncattr("MAP_PROJ"))
+            truelat1 = float(nc.getncattr("TRUELAT1"))
+            truelat2 = float(nc.getncattr("TRUELAT2"))
+            stand_lon = float(nc.getncattr("STAND_LON"))
+            cen_lat = float(nc.getncattr("CEN_LAT"))
+            cen_lon = float(nc.getncattr("CEN_LON"))
+        finally:
+            nc.close()
+
+        if map_proj == 1:
+            return ccrs.LambertConformal(
+                central_longitude=stand_lon,
+                central_latitude=cen_lat,
+                standard_parallels=(truelat1, truelat2),
+            )
+        elif map_proj == 2:
+            return ccrs.Stereographic(
+                central_latitude=cen_lat,
+                central_longitude=stand_lon,
+                true_scale_latitude=truelat1,
+            )
+        elif map_proj == 3:
+            return ccrs.Mercator(
+                central_longitude=cen_lon,
+                latitude_true_scale=truelat1,
+            )
+        elif map_proj == 6:
+            return ccrs.PlateCarree(central_longitude=cen_lon)
+        else:
+            raise ValueError(
+                f"Unsupported WRF map projection MAP_PROJ={map_proj}. "
+                f"Supported: 1 (Lambert), 2 (Polar Stereographic), "
+                f"3 (Mercator), 6 (Lat-Lon)."
+            )
+    except ImportError:
+        pass  # netCDF4 not available -- fall through to inference
+
+    # --- Fallback: infer projection from lat/lon arrays ---
+    lat, lon = latlon_coords(wf, timeidx=0)
+    cen_lat = float(lat[lat.shape[0] // 2, lat.shape[1] // 2])
+    cen_lon = float(lon[lon.shape[0] // 2, lon.shape[1] // 2])
+
+    # Check if lat/lon form a regular grid (PlateCarree)
+    lat_range = float(lat.max() - lat.min())
+    lon_range = float(lon.max() - lon.min())
+
+    # Heuristic: if the lat spacing along columns is very uniform, it is
+    # likely a lat-lon grid. Otherwise assume Lambert Conformal which is
+    # the most common WRF projection.
+    lat_col = lat[:, lat.shape[1] // 2]
+    if lat_col.shape[0] > 1:
+        dlat = np.diff(lat_col)
+        lat_uniform = float(np.std(dlat)) < 0.001 * float(np.mean(np.abs(dlat)) + 1e-10)
+    else:
+        lat_uniform = True
+
+    lon_row = lon[lon.shape[0] // 2, :]
+    if lon_row.shape[0] > 1:
+        dlon = np.diff(lon_row)
+        lon_uniform = float(np.std(dlon)) < 0.001 * float(np.mean(np.abs(dlon)) + 1e-10)
+    else:
+        lon_uniform = True
+
+    if lat_uniform and lon_uniform:
+        # Regular lat-lon grid
         return ccrs.PlateCarree(central_longitude=cen_lon)
     else:
-        raise ValueError(
-            f"Unsupported WRF map projection MAP_PROJ={map_proj}. "
-            f"Supported: 1 (Lambert), 2 (Polar Stereographic), "
-            f"3 (Mercator), 6 (Lat-Lon)."
+        # Default to Lambert Conformal -- the most common WRF projection.
+        # Use the domain center and reasonable standard parallels.
+        return ccrs.LambertConformal(
+            central_longitude=cen_lon,
+            central_latitude=cen_lat,
+            standard_parallels=(cen_lat - 5.0, cen_lat + 5.0),
         )
 
 

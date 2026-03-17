@@ -17,8 +17,8 @@ pub fn compute_stp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
-    let psfc: Vec<f64> = f.psfc(t)?.iter().map(|p| p / 100.0).collect();
-    let t2_c: Vec<f64> = f.t2(t)?.iter().map(|t| t - 273.15).collect();
+    let psfc = f.psfc(t)?;   // Pa -- compute_cape_cin converts internally
+    let t2 = f.t2(t)?;       // K  -- compute_cape_cin converts internally
     let q2 = f.q2(t)?;
     let u = f.u_destag(t)?;
     let v = f.v_destag(t)?;
@@ -27,11 +27,10 @@ pub fn compute_stp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let ny = f.ny;
     let nz = f.nz;
 
-    let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
-
     // Surface-based CAPE + LCL
+    // Pass raw Pa/K values -- compute_cape_cin converts internally
     let (sbcape, _, lcl, _) = crate::met::composite::compute_cape_cin(
-        &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
+        &pres, &tc, &qv, &h_agl, &psfc, &t2, &q2,
         nx, ny, nz, "sb",
     );
 
@@ -56,8 +55,8 @@ pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfR
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
-    let psfc: Vec<f64> = f.psfc(t)?.iter().map(|p| p / 100.0).collect();
-    let t2_c: Vec<f64> = f.t2(t)?.iter().map(|t| t - 273.15).collect();
+    let psfc = f.psfc(t)?;   // Pa -- compute_cape_cin converts internally
+    let t2 = f.t2(t)?;       // K  -- compute_cape_cin converts internally
     let q2 = f.q2(t)?;
     let u = f.u_destag(t)?;
     let v = f.v_destag(t)?;
@@ -70,8 +69,9 @@ pub fn compute_stp_effective(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfR
     let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
 
     // Mixed-layer CAPE, CIN, and LCL
+    // Pass raw Pa/K values -- compute_cape_cin converts internally
     let (mlcape, mlcin, lcl, _) = crate::met::composite::compute_cape_cin(
-        &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
+        &pres, &tc, &qv, &h_agl, &psfc, &t2, &q2,
         nx, ny, nz, "ml",
     );
 
@@ -196,12 +196,12 @@ fn stp_eff_from_components(cape: &[f64], lcl: &[f64], cin: &[f64], srh: &[f64], 
 
 /// Supercell Composite Parameter (dimensionless). `[ny, nx]`
 pub fn compute_scp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    let pres_hpa: Vec<f64> = f.full_pressure(t)?.iter().map(|p| p / 100.0).collect();
+    let pres = f.full_pressure(t)?;
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
-    let psfc: Vec<f64> = f.psfc(t)?.iter().map(|p| p / 100.0).collect();
-    let t2_c: Vec<f64> = f.t2(t)?.iter().map(|t| t - 273.15).collect();
+    let psfc = f.psfc(t)?;   // Pa -- compute_cape_cin converts internally
+    let t2 = f.t2(t)?;       // K  -- compute_cape_cin converts internally
     let q2 = f.q2(t)?;
     let u = f.u_destag(t)?;
     let v = f.v_destag(t)?;
@@ -210,8 +210,9 @@ pub fn compute_scp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let ny = f.ny;
     let nz = f.nz;
 
+    // Pass raw Pa/K values -- compute_cape_cin converts internally
     let (mucape, _, _, _) = crate::met::composite::compute_cape_cin(
-        &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
+        &pres, &tc, &qv, &h_agl, &psfc, &t2, &q2,
         nx, ny, nz, "mu",
     );
 
@@ -227,12 +228,12 @@ pub fn compute_scp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 ///
 /// SRH depth is configurable via `opts.depth_m` (default 1000 m for 0-1 km EHI).
 pub fn compute_ehi(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    let pres_hpa: Vec<f64> = f.full_pressure(t)?.iter().map(|p| p / 100.0).collect();
+    let pres = f.full_pressure(t)?;
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
-    let psfc: Vec<f64> = f.psfc(t)?.iter().map(|p| p / 100.0).collect();
-    let t2_c: Vec<f64> = f.t2(t)?.iter().map(|t| t - 273.15).collect();
+    let psfc = f.psfc(t)?;   // Pa -- compute_cape_cin converts internally
+    let t2 = f.t2(t)?;       // K  -- compute_cape_cin converts internally
     let q2 = f.q2(t)?;
     let u = f.u_destag(t)?;
     let v = f.v_destag(t)?;
@@ -241,8 +242,9 @@ pub fn compute_ehi(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f
     let ny = f.ny;
     let nz = f.nz;
 
+    // Pass raw Pa/K values -- compute_cape_cin converts internally
     let (sbcape, _, _, _) = crate::met::composite::compute_cape_cin(
-        &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
+        &pres, &tc, &qv, &h_agl, &psfc, &t2, &q2,
         nx, ny, nz, "sb",
     );
 
@@ -296,12 +298,13 @@ pub fn compute_critical_angle(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> Wrf
 
 /// Significant Hail Parameter (dimensionless). `[ny, nx]`
 pub fn compute_ship(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    let pres_hpa: Vec<f64> = f.full_pressure(t)?.iter().map(|p| p / 100.0).collect();
+    let pres = f.full_pressure(t)?;
+    let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
-    let psfc: Vec<f64> = f.psfc(t)?.iter().map(|p| p / 100.0).collect();
-    let t2_c: Vec<f64> = f.t2(t)?.iter().map(|t| t - 273.15).collect();
+    let psfc = f.psfc(t)?;   // Pa -- compute_cape_cin converts internally
+    let t2 = f.t2(t)?;       // K  -- compute_cape_cin converts internally
     let q2 = f.q2(t)?;
 
     let nx = f.nx;
@@ -309,8 +312,9 @@ pub fn compute_ship(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec
     let nz = f.nz;
     let nxy = nx * ny;
 
+    // Pass raw Pa/K values -- compute_cape_cin converts internally
     let (mucape, _, _, _) = crate::met::composite::compute_cape_cin(
-        &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
+        &pres, &tc, &qv, &h_agl, &psfc, &t2, &q2,
         nx, ny, nz, "mu",
     );
 
@@ -344,12 +348,12 @@ pub fn compute_ship(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec
 
 /// Bulk Richardson Number (dimensionless). `[ny, nx]`
 pub fn compute_bri(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    let pres_hpa: Vec<f64> = f.full_pressure(t)?.iter().map(|p| p / 100.0).collect();
+    let pres = f.full_pressure(t)?;
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
-    let psfc: Vec<f64> = f.psfc(t)?.iter().map(|p| p / 100.0).collect();
-    let t2_c: Vec<f64> = f.t2(t)?.iter().map(|t| t - 273.15).collect();
+    let psfc = f.psfc(t)?;   // Pa -- compute_cape_cin converts internally
+    let t2 = f.t2(t)?;       // K  -- compute_cape_cin converts internally
     let q2 = f.q2(t)?;
     let u = f.u_destag(t)?;
     let v = f.v_destag(t)?;
@@ -358,8 +362,9 @@ pub fn compute_bri(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let ny = f.ny;
     let nz = f.nz;
 
+    // Pass raw Pa/K values -- compute_cape_cin converts internally
     let (sbcape, _, _, _) = crate::met::composite::compute_cape_cin(
-        &pres_hpa, &tc, &qv, &h_agl, &psfc, &t2_c, &q2,
+        &pres, &tc, &qv, &h_agl, &psfc, &t2, &q2,
         nx, ny, nz, "sb",
     );
 
