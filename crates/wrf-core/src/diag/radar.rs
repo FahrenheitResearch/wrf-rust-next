@@ -6,7 +6,7 @@
 //! Uses constant intercept parameters (ivarint=0) and bright-band
 //! correction (iliqskin=1), matching the wrf-python defaults.
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -84,7 +84,7 @@ pub fn compute_dbz(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f
     let n = f.nxyz();
 
     let dbz: Vec<f64> = (0..n)
-        .into_par_iter()
+        .into_iter()
         .map(|i| {
             let t_k = tk[i];
             let qvp = qv[i].max(0.0);

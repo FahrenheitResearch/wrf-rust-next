@@ -3,7 +3,7 @@
 //! Uses crate::met::composite::compute_cape_cin() for parallel grid computation
 //! and crate::met::thermo::cape_cin_core() for column-by-column fallback.
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -57,10 +57,10 @@ fn compute_cape_fields(
     let mut lcl = vec![0.0f64; nxy];
     let mut lfc = vec![0.0f64; nxy];
 
-    cape.par_iter_mut()
-        .zip(cin.par_iter_mut())
-        .zip(lcl.par_iter_mut())
-        .zip(lfc.par_iter_mut())
+    cape.iter_mut()
+        .zip(cin.iter_mut())
+        .zip(lcl.iter_mut())
+        .zip(lfc.iter_mut())
         .enumerate()
         .for_each(|(ij, (((cape_v, cin_v), lcl_v), lfc_v))| {
             // Extract column profiles -- pass Pa pressure to cape_cin_core
@@ -167,7 +167,7 @@ pub fn compute_el(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f6
     let pt = resolve_parcel_type(opts, "sb");
 
     let mut el = vec![0.0f64; nxy];
-    el.par_iter_mut().enumerate().for_each(|(ij, el_v)| {
+    el.iter_mut().enumerate().for_each(|(ij, el_v)| {
         let mut p_prof = Vec::with_capacity(nz);
         let mut t_prof = Vec::with_capacity(nz);
         let mut td_prof = Vec::with_capacity(nz);
@@ -260,7 +260,7 @@ pub fn compute_cape3d(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<V
     // For each column, compute CAPE for a parcel starting at each level
     let mut cape3d = vec![0.0f64; nz * nxy];
 
-    cape3d.par_chunks_mut(nxy).enumerate().for_each(|(k, plane)| {
+    cape3d.chunks_mut(nxy).enumerate().for_each(|(k, plane)| {
         for ij in 0..nxy {
             let mut p_prof = Vec::with_capacity(nz - k);
             let mut t_prof = Vec::with_capacity(nz - k);
@@ -320,10 +320,10 @@ fn compute_cape_fields_custom(
     let mut lcl = vec![0.0f64; nxy];
     let mut lfc = vec![0.0f64; nxy];
 
-    cape.par_iter_mut()
-        .zip(cin.par_iter_mut())
-        .zip(lcl.par_iter_mut())
-        .zip(lfc.par_iter_mut())
+    cape.iter_mut()
+        .zip(cin.iter_mut())
+        .zip(lcl.iter_mut())
+        .zip(lfc.iter_mut())
         .enumerate()
         .for_each(|(ij, (((cape_v, cin_v), lcl_v), lfc_v))| {
             let mut p_prof = Vec::with_capacity(nz);
@@ -455,7 +455,7 @@ pub fn compute_el_generic(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
         let nxy = nx * ny;
 
         let mut el = vec![0.0f64; nxy];
-        el.par_iter_mut().enumerate().for_each(|(ij, el_v)| {
+        el.iter_mut().enumerate().for_each(|(ij, el_v)| {
             let mut p_prof = Vec::with_capacity(nz);
             let mut t_prof = Vec::with_capacity(nz);
             let mut td_prof = Vec::with_capacity(nz);
@@ -535,8 +535,8 @@ pub fn compute_effective_inflow_layer(
     let mut base_plane = vec![0.0f64; nxy];
     let mut top_plane = vec![0.0f64; nxy];
 
-    base_plane.par_iter_mut()
-        .zip(top_plane.par_iter_mut())
+    base_plane.iter_mut()
+        .zip(top_plane.iter_mut())
         .enumerate()
         .for_each(|(ij, (base_out, top_out))| {
         // Extract column profiles
@@ -645,7 +645,7 @@ pub fn compute_effective_inflow_cape(
 
     let mut result = vec![0.0f64; nxy];
 
-    result.par_iter_mut().enumerate().for_each(|(ij, out)| {
+    result.iter_mut().enumerate().for_each(|(ij, out)| {
         let mut p_prof = Vec::with_capacity(nz);
         let mut t_prof = Vec::with_capacity(nz);
         let mut td_prof = Vec::with_capacity(nz);

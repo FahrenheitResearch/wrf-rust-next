@@ -3,7 +3,7 @@
 //! Uses proper Bunkers storm motion (crate::met), NOT wrf-python's
 //! broken 0.75*(3-10km mean wind) rotated 30 degrees.
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -59,7 +59,7 @@ pub fn compute_srh_field(
     if let Some((_sm_u, _sm_v)) = storm_motion {
         // Custom storm motion: compute column-by-column
         let mut srh = vec![0.0f64; nxy];
-        srh.par_iter_mut().enumerate().for_each(|(ij, srh_val)| {
+        srh.iter_mut().enumerate().for_each(|(ij, srh_val)| {
             // Prepend 10m wind as surface level
             let mut u_prof = Vec::with_capacity(nz + 1);
             let mut v_prof = Vec::with_capacity(nz + 1);
@@ -183,7 +183,7 @@ fn compute_bunkers_columns(
 
     // Process columns in parallel
     let results: Vec<_> = (0..nxy)
-        .into_par_iter()
+        .into_iter()
         .map(|ij| {
             // Prepend 10m wind as surface level
             let mut u_prof = Vec::with_capacity(nz + 1);
@@ -315,7 +315,7 @@ pub fn compute_effective_srh(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfRe
     let custom_sm = opts.storm_motion;
 
     let mut srh = vec![0.0f64; nxy];
-    srh.par_iter_mut().enumerate().for_each(|(ij, srh_val)| {
+    srh.iter_mut().enumerate().for_each(|(ij, srh_val)| {
         // Build augmented column profiles with 10m prepend
         let mut p_prof = Vec::with_capacity(nz + 1);
         let mut t_prof = Vec::with_capacity(nz + 1);
@@ -477,7 +477,7 @@ pub fn compute_mean_wind(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult
     let mut mean_v = vec![0.0f64; nxy];
 
     let results: Vec<_> = (0..nxy)
-        .into_par_iter()
+        .into_iter()
         .map(|ij| {
             // Prepend 10m wind as surface level
             let mut u_prof = Vec::with_capacity(nz + 1);

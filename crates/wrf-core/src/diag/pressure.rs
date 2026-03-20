@@ -1,7 +1,7 @@
 //! Pressure, height, and geopotential diagnostic variables:
 //! pressure, height, height_agl, zstag, geopt, geopt_stag, terrain, slp, omega
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -74,7 +74,7 @@ pub fn compute_slp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 
     let mut slp = vec![0.0f64; nxy];
 
-    slp.par_iter_mut().enumerate().for_each(|(ij, slp_val)| {
+    slp.iter_mut().enumerate().for_each(|(ij, slp_val)| {
         let p_sfc = pres[ij]; // k=0 surface pressure
 
         // Step 1: Find the level ~PCONST above the surface.
@@ -154,10 +154,10 @@ pub fn compute_omega(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Ve
     let tk = f.temperature(t)?;
     let qv = f.qvapor(t)?;
 
-    Ok(w.par_iter()
-        .zip(pres.par_iter())
-        .zip(tk.par_iter())
-        .zip(qv.par_iter())
+    Ok(w.iter()
+        .zip(pres.iter())
+        .zip(tk.iter())
+        .zip(qv.iter())
         .map(|(((w, p), t_k), q)| {
             let tv = t_k * (1.0 + 0.61 * q.max(0.0));
             let rho = p / (RD * tv);

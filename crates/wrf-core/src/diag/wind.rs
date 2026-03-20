@@ -1,7 +1,7 @@
 //! Wind diagnostic variables:
 //! ua, va, wa, wspd, wdir, uvmet, uvmet10, wspd10, wdir10
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -38,8 +38,8 @@ fn rotate_to_earth(u: &[f64], v: &[f64], sina: &[f64], cosa: &[f64], nxy: usize)
     let mut v_earth = vec![0.0; v.len()];
 
     u_earth
-        .par_iter_mut()
-        .zip(v_earth.par_iter_mut())
+        .iter_mut()
+        .zip(v_earth.iter_mut())
         .enumerate()
         .for_each(|(idx, (ue, ve))| {
             let ij = idx % nxy;
@@ -57,8 +57,8 @@ pub fn compute_wspd(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec
     let u = f.u_destag(t)?;
     let v = f.v_destag(t)?;
 
-    Ok(u.par_iter()
-        .zip(v.par_iter())
+    Ok(u.iter()
+        .zip(v.iter())
         .map(|(u, v)| (u * u + v * v).sqrt())
         .collect())
 }
@@ -73,8 +73,8 @@ pub fn compute_wdir(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec
     let (ue, ve) = rotate_to_earth(&u, &v, &sina, &cosa, f.nxy());
 
     Ok(ue
-        .par_iter()
-        .zip(ve.par_iter())
+        .iter()
+        .zip(ve.iter())
         .map(|(u, v)| {
             let dir = 270.0 - v.atan2(*u).to_degrees();
             if dir < 0.0 { dir + 360.0 } else if dir >= 360.0 { dir - 360.0 } else { dir }
@@ -114,8 +114,8 @@ pub fn compute_uvmet10(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
 pub fn compute_wspd10(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let u = f.u10(t)?;
     let v = f.v10(t)?;
-    Ok(u.par_iter()
-        .zip(v.par_iter())
+    Ok(u.iter()
+        .zip(v.iter())
         .map(|(u, v)| (u * u + v * v).sqrt())
         .collect())
 }
@@ -130,8 +130,8 @@ pub fn compute_wdir10(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<V
     let (ue, ve) = rotate_to_earth(&u, &v, &sina, &cosa, f.nxy());
 
     Ok(ue
-        .par_iter()
-        .zip(ve.par_iter())
+        .iter()
+        .zip(ve.iter())
         .map(|(u, v)| {
             let dir = 270.0 - v.atan2(*u).to_degrees();
             if dir < 0.0 { dir + 360.0 } else if dir >= 360.0 { dir - 360.0 } else { dir }

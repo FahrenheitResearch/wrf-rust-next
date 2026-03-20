@@ -1,6 +1,6 @@
 //! Vorticity diagnostic variables: avo, pvo
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -26,7 +26,7 @@ pub fn compute_avo(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 
     let mut avo = vec![0.0f64; nz * nxy];
 
-    avo.par_chunks_mut(nxy).enumerate().for_each(|(k, plane)| {
+    avo.chunks_mut(nxy).enumerate().for_each(|(k, plane)| {
         let u_plane = &u[k * nxy..(k + 1) * nxy];
         let v_plane = &v[k * nxy..(k + 1) * nxy];
 
@@ -63,7 +63,7 @@ pub fn compute_pvo(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 
     let mut pvo = vec![0.0f64; nz * nxy];
 
-    pvo.par_chunks_mut(nxy).enumerate().for_each(|(k, plane)| {
+    pvo.chunks_mut(nxy).enumerate().for_each(|(k, plane)| {
         let u_plane = &u[k * nxy..(k + 1) * nxy];
         let v_plane = &v[k * nxy..(k + 1) * nxy];
 

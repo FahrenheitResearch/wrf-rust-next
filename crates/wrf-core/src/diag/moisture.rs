@@ -1,7 +1,7 @@
 //! Moisture diagnostic variables:
 //! pw, rh2m, dp2m, mixing_ratio, specific_humidity
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -26,9 +26,9 @@ pub fn compute_rh2m(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<
     let psfc = f.psfc(t)?; // Pa
 
     Ok(t2
-        .par_iter()
-        .zip(q2.par_iter())
-        .zip(psfc.par_iter())
+        .iter()
+        .zip(q2.iter())
+        .zip(psfc.iter())
         .map(|((t_k, q), p_pa)| {
             let t_c = t_k - 273.15;
             let p_hpa = p_pa / 100.0;
@@ -45,8 +45,8 @@ pub fn compute_dp2m(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<
     let psfc = f.psfc(t)?;
 
     Ok(q2
-        .par_iter()
-        .zip(psfc.par_iter())
+        .iter()
+        .zip(psfc.iter())
         .map(|(q, p_pa)| {
             let q = q.max(1e-10);
             let p_hpa = p_pa / 100.0;
@@ -66,5 +66,5 @@ pub fn compute_mixing_ratio(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfRe
 /// q = qv / (1 + qv)
 pub fn compute_specific_humidity(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let qv = f.qvapor(t)?;
-    Ok(qv.par_iter().map(|q| q / (1.0 + q)).collect())
+    Ok(qv.iter().map(|q| q / (1.0 + q)).collect())
 }

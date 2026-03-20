@@ -1,7 +1,7 @@
 //! Severe weather composite diagnostic variables:
 //! stp, scp, ehi, critical_angle, ship, bri
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -99,10 +99,10 @@ pub fn compute_stp_generic(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResu
 /// Fixed-layer STP: 4-term formula (no CIN).
 ///   STP = (sbCAPE/1500) * ((2000-LCL)/1000) * (SRH/150) * (shear/20)
 fn stp_fixed_from_components(cape: &[f64], lcl: &[f64], srh: &[f64], shear: &[f64]) -> Vec<f64> {
-    cape.par_iter()
-        .zip(lcl.par_iter())
-        .zip(srh.par_iter())
-        .zip(shear.par_iter())
+    cape.iter()
+        .zip(lcl.iter())
+        .zip(srh.iter())
+        .zip(shear.iter())
         .map(|(((c, l), s), sh)| {
             let cape_term = (c / 1500.0).max(0.0);
             let lcl_term = if *l >= 2000.0 { 0.0 } else if *l <= 1000.0 { 1.0 } else { (2000.0 - l) / 1000.0 };
@@ -116,11 +116,11 @@ fn stp_fixed_from_components(cape: &[f64], lcl: &[f64], srh: &[f64], shear: &[f6
 /// Effective-layer STP: 5-term formula with CIN.
 ///   STP_eff = (mlCAPE/1500) * ((2000-mlLCL)/1000) * (ESRH/150) * (EBWD/20) * ((200+mlCIN)/150)
 fn stp_eff_from_components(cape: &[f64], lcl: &[f64], cin: &[f64], srh: &[f64], shear: &[f64]) -> Vec<f64> {
-    cape.par_iter()
-        .zip(lcl.par_iter())
-        .zip(cin.par_iter())
-        .zip(srh.par_iter())
-        .zip(shear.par_iter())
+    cape.iter()
+        .zip(lcl.iter())
+        .zip(cin.iter())
+        .zip(srh.iter())
+        .zip(shear.iter())
         .map(|((((c, l), ci), s), sh)| {
             let cape_term = (c / 1500.0).max(0.0);
             let lcl_term = if *l >= 2000.0 { 0.0 } else if *l <= 1000.0 { 1.0 } else { (2000.0 - l) / 1000.0 };
@@ -196,8 +196,8 @@ pub fn compute_ehi(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f
 
     // EHI = (CAPE * SRH) / 160000
     Ok(sbcape
-        .par_iter()
-        .zip(srh.par_iter())
+        .iter()
+        .zip(srh.iter())
         .map(|(cape, s)| (cape * s) / 160000.0)
         .collect())
 }
@@ -214,7 +214,7 @@ pub fn compute_critical_angle(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfR
     let nxy = nx * ny;
 
     let mut result = vec![0.0f64; nxy];
-    result.par_iter_mut().enumerate().for_each(|(ij, val)| {
+    result.iter_mut().enumerate().for_each(|(ij, val)| {
         let mut u_prof = Vec::with_capacity(nz);
         let mut v_prof = Vec::with_capacity(nz);
         let mut h_prof = Vec::with_capacity(nz);
@@ -289,8 +289,8 @@ pub fn compute_ship(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<
     // T500 and MR_500: interpolate per column
     let mut t500 = vec![0.0f64; nxy];
     let mut mr500 = vec![0.0f64; nxy];
-    t500.par_iter_mut()
-        .zip(mr500.par_iter_mut())
+    t500.iter_mut()
+        .zip(mr500.iter_mut())
         .enumerate()
         .for_each(|(ij, (t500_val, mr500_val))| {
             for k in 0..nz - 1 {
@@ -309,11 +309,11 @@ pub fn compute_ship(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<
 
     // SHIP = (MUCAPE * MR_500 * LR * (-T500) * SHEAR) / 42000000
     Ok(mucape
-        .par_iter()
-        .zip(mr500.par_iter())
-        .zip(lr_700_500.par_iter())
-        .zip(t500.par_iter())
-        .zip(shear6.par_iter())
+        .iter()
+        .zip(mr500.iter())
+        .zip(lr_700_500.iter())
+        .zip(t500.iter())
+        .zip(shear6.iter())
         .map(|((((cape, mr), lr), t5), shr)| {
             if *cape <= 0.0 {
                 return 0.0;
@@ -350,8 +350,8 @@ pub fn compute_bri(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f
 
     // BRN = CAPE / (0.5 * shear^2)
     Ok(sbcape
-        .par_iter()
-        .zip(shear6.par_iter())
+        .iter()
+        .zip(shear6.iter())
         .map(|(cape, shr)| {
             let denom = 0.5 * shr * shr;
             if denom > 0.1 { cape / denom } else { 0.0 }

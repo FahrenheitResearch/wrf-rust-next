@@ -1,7 +1,7 @@
 //! Thermodynamic diagnostic variables:
 //! temp, tc, theta, theta_e, tv, twb, td, rh
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -45,9 +45,9 @@ pub fn compute_theta_e(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
 
     // Dewpoint from mixing ratio: td_c = dewpoint_from_q(q, p_hpa)
     let result: Vec<f64> = p_hpa
-        .par_iter()
-        .zip(tc.par_iter())
-        .zip(qv.par_iter())
+        .iter()
+        .zip(tc.iter())
+        .zip(qv.iter())
         .map(|((p, t_c), q)| {
             let td_c = crate::met::thermo::dewpoint_from_rh(
                 *t_c,
@@ -65,8 +65,8 @@ pub fn compute_tv(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f
     let qv = f.qvapor(t)?;
     // Tv = T * (1 + 0.61 * qv)
     Ok(tk
-        .par_iter()
-        .zip(qv.par_iter())
+        .iter()
+        .zip(qv.iter())
         .map(|(t, q)| t * (1.0 + 0.61 * q.max(0.0)))
         .collect())
 }
@@ -78,9 +78,9 @@ pub fn compute_twb(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let qv = f.qvapor(t)?;
 
     Ok(p_hpa
-        .par_iter()
-        .zip(tc.par_iter())
-        .zip(qv.par_iter())
+        .iter()
+        .zip(tc.iter())
+        .zip(qv.iter())
         .map(|((p, t_c), q)| {
             let td_c = dewpoint_from_q(*q, *p);
             crate::met::thermo::wet_bulb_temperature(*p, *t_c, td_c) + 273.15
@@ -94,8 +94,8 @@ pub fn compute_td(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f
     let qv = f.qvapor(t)?;
 
     Ok(p_hpa
-        .par_iter()
-        .zip(qv.par_iter())
+        .iter()
+        .zip(qv.iter())
         .map(|(p, q)| dewpoint_from_q(*q, *p))
         .collect())
 }
@@ -107,9 +107,9 @@ pub fn compute_rh(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f
     let qv = f.qvapor(t)?;
 
     Ok(p_hpa
-        .par_iter()
-        .zip(tc.par_iter())
-        .zip(qv.par_iter())
+        .iter()
+        .zip(tc.iter())
+        .zip(qv.iter())
         .map(|((p, t_c), q)| rh_from_q(*q, *p, *t_c).clamp(0.0, 100.0))
         .collect())
 }

@@ -3,13 +3,12 @@
 //! Generic versions that accept data slices instead of WrfFile references,
 //! making them usable with any data source (WRF, HRRR GRIB2, GFS, etc.).
 //!
-//! Uses the thermo module for thermodynamic calculations and rayon
-//! for parallel computation across grid points.
+//! Uses the thermo module for thermodynamic calculations.
 //!
 //! Vendored from wx-math crate for self-contained builds.
 
 use super::thermo as metfuncs;
-use rayon::prelude::*;
+
 
 /// Physical constants
 const RD: f64 = 287.058;
@@ -64,7 +63,7 @@ pub fn dewpoint_from_q(q: f64, p_hpa: f64) -> f64 {
 // CAPE / CIN
 // ---------------------------------------------------------------------------
 
-/// Compute CAPE/CIN for every grid point (parallelized with rayon).
+/// Compute CAPE/CIN for every grid point.
 ///
 /// All 3D arrays are flattened `[nz][ny][nx]`. 2D arrays are `[ny][nx]`.
 ///
@@ -98,7 +97,7 @@ pub fn compute_cape_cin(
 
     // Parallel computation over all grid points
     let results: Vec<(f64, f64, f64, f64)> = (0..n2d)
-        .into_par_iter()
+        .into_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -201,7 +200,7 @@ pub fn compute_srh_with_pressure(
     let has_pressure = pressure_hpa_3d.len() == nz * ny * nx;
 
     (0..n2d)
-        .into_par_iter()
+        .into_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -364,7 +363,7 @@ pub fn compute_shear(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_par_iter()
+        .into_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -502,7 +501,7 @@ pub fn compute_lapse_rate(
     let top_m_val = top_km * 1000.0;
 
     (0..n2d)
-        .into_par_iter()
+        .into_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -567,7 +566,7 @@ pub fn compute_pw(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_par_iter()
+        .into_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -613,7 +612,7 @@ pub fn composite_reflectivity_from_refl(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_par_iter()
+        .into_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -649,7 +648,7 @@ pub fn composite_reflectivity_from_hydrometeors(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_par_iter()
+        .into_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -870,7 +869,7 @@ pub fn significant_hail_parameter(
 ) -> Vec<f64> {
     let n = nx * ny;
     (0..n)
-        .into_par_iter()
+        .into_iter()
         .map(|i| {
             let mucape = cape[i].max(0.0);
             let mr_val = mr[i].max(0.0);
@@ -904,7 +903,7 @@ pub fn derecho_composite_parameter(
 ) -> Vec<f64> {
     let n = nx * ny;
     (0..n)
-        .into_par_iter()
+        .into_iter()
         .map(|i| {
             let dcape_term = (dcape[i] / 980.0).max(0.0);
             let cape_term = (mu_cape[i] / 2000.0).max(0.0);
@@ -933,7 +932,7 @@ pub fn supercell_composite_parameter(
 ) -> Vec<f64> {
     let n = nx * ny;
     (0..n)
-        .into_par_iter()
+        .into_iter()
         .map(|i| {
             let cape_term = (mu_cape[i] / 1000.0).max(0.0);
             let srh_term = (srh[i] / 50.0).max(0.0);
@@ -966,7 +965,7 @@ pub fn critical_angle(
 ) -> Vec<f64> {
     let n = nx * ny;
     (0..n)
-        .into_par_iter()
+        .into_iter()
         .map(|i| {
             let inflow_u = -u_storm[i];
             let inflow_v = -v_storm[i];
@@ -1240,7 +1239,7 @@ pub fn interp_to_pressure_level(
     let log_target = target_level.ln();
 
     (0..n2d)
-        .into_par_iter()
+        .into_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -1306,7 +1305,7 @@ pub fn interp_to_height_level(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_par_iter()
+        .into_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;

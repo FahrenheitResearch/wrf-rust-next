@@ -1,6 +1,6 @@
 //! Cloud diagnostic variables: ctt, cloudfrac
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -21,7 +21,7 @@ pub fn compute_ctt(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 
     let mut ctt = vec![-80.0f64; nxy]; // default cold value if no cloud
 
-    ctt.par_iter_mut().enumerate().for_each(|(ij, ctt_val)| {
+    ctt.iter_mut().enumerate().for_each(|(ij, ctt_val)| {
         // Scan from top down, find highest cloud level
         for k in (0..nz).rev() {
             let idx = k * nxy + ij;
@@ -56,7 +56,7 @@ pub fn compute_cloudfrac(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResul
 
     // For each column, compute max overlap cloud fraction in each layer
     let process = |frac: &mut [f64], p_top: f64, p_bot: f64| {
-        frac.par_iter_mut().enumerate().for_each(|(ij, val)| {
+        frac.iter_mut().enumerate().for_each(|(ij, val)| {
             let mut max_cloud = 0.0f64;
             for k in 0..nz {
                 let idx = k * nxy + ij;

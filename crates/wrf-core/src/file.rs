@@ -5,7 +5,7 @@ use std::sync::Mutex;
 #[cfg(feature = "netcdf-backend")]
 use ndarray::Axis;
 
-use rayon::prelude::*;
+
 
 use crate::error::{WrfError, WrfResult};
 use crate::grid;
@@ -728,7 +728,7 @@ impl WrfFile {
 
 /// Interpolate masked grid cells from surrounding unmasked values.
 /// Uses inverse-distance weighting with a search radius that expands until
-/// neighbors are found. Rayon-parallelized.
+/// neighbors are found.
 fn interpolate_masked_2d(data: &[f64], mask: &[bool], ny: usize, nx: usize) -> Vec<f64> {
     let mut result = data.to_vec();
     let masked_indices: Vec<usize> = mask.iter().enumerate()
@@ -736,7 +736,7 @@ fn interpolate_masked_2d(data: &[f64], mask: &[bool], ny: usize, nx: usize) -> V
         .map(|(i, _)| i)
         .collect();
 
-    let interpolated: Vec<(usize, f64)> = masked_indices.par_iter().map(|&idx| {
+    let interpolated: Vec<(usize, f64)> = masked_indices.iter().map(|&idx| {
         let cj = (idx / nx) as i32;
         let ci = (idx % nx) as i32;
 

@@ -1,4 +1,4 @@
-use rayon::prelude::*;
+
 
 /// Destagger a 3D field along the X (west_east) axis.
 ///
@@ -8,7 +8,7 @@ use rayon::prelude::*;
 pub fn destagger_x(data: &[f64], nz: usize, ny: usize, nx_stag: usize) -> Vec<f64> {
     let nx = nx_stag - 1;
     let mut out = vec![0.0; nz * ny * nx];
-    out.par_chunks_mut(ny * nx)
+    out.chunks_mut(ny * nx)
         .enumerate()
         .for_each(|(k, plane)| {
             for j in 0..ny {
@@ -29,7 +29,7 @@ pub fn destagger_x(data: &[f64], nz: usize, ny: usize, nx_stag: usize) -> Vec<f6
 pub fn destagger_y(data: &[f64], nz: usize, ny_stag: usize, nx: usize) -> Vec<f64> {
     let ny = ny_stag - 1;
     let mut out = vec![0.0; nz * ny * nx];
-    out.par_chunks_mut(ny * nx)
+    out.chunks_mut(ny * nx)
         .enumerate()
         .for_each(|(k, plane)| {
             for j in 0..ny {
@@ -51,7 +51,7 @@ pub fn destagger_z(data: &[f64], nz_stag: usize, ny: usize, nx: usize) -> Vec<f6
     let nz = nz_stag - 1;
     let plane_size = ny * nx;
     let mut out = vec![0.0; nz * plane_size];
-    out.par_chunks_mut(plane_size)
+    out.chunks_mut(plane_size)
         .enumerate()
         .for_each(|(k, plane)| {
             let off_b = k * plane_size;

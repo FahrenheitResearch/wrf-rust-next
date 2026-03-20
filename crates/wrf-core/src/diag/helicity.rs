@@ -9,7 +9,7 @@
 //! 3. If the column-mean w > 0, integrate tem1 over the layer using the
 //!    trapezoidal rule.  Otherwise UH = 0 for that column.
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -64,7 +64,7 @@ pub fn compute_uhel(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<
     let twodx = 2.0 * dx;
     let twody = 2.0 * dy;
     let mut vort_3d = vec![0.0f64; nz * nxy];
-    vort_3d.par_chunks_mut(nxy).enumerate().for_each(|(k, plane)| {
+    vort_3d.chunks_mut(nxy).enumerate().for_each(|(k, plane)| {
         let u_plane = &u[k * nxy..(k + 1) * nxy];
         let v_plane = &v[k * nxy..(k + 1) * nxy];
         for j in 0..ny {
@@ -101,13 +101,13 @@ pub fn compute_uhel(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<
 
     // Pre-multiply: tem1(k) = w_destag(k) * vorticity(k)
     let mut tem1 = vec![0.0f64; nz * nxy];
-    tem1.par_iter_mut().enumerate().for_each(|(idx, val)| {
+    tem1.iter_mut().enumerate().for_each(|(idx, val)| {
         *val = w[idx] * vort_3d[idx];
     });
 
     // Integrate per column, checking column-mean w first (Fortran DCALCUH logic).
     let mut uhel = vec![0.0f64; nxy];
-    uhel.par_iter_mut().enumerate().for_each(|(ij, uh_val)| {
+    uhel.iter_mut().enumerate().for_each(|(ij, uh_val)| {
         // --- Step 1: compute column-mean w over [z_bot, z_top] ---
         let mut w_sum = 0.0f64;
         let mut depth = 0.0f64;

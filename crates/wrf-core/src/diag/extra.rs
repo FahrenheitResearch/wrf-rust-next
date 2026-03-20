@@ -1,7 +1,7 @@
 //! Extra diagnostic variables:
 //! lapse rates, freezing level, wet-bulb zero, theta_w, fire indices
 
-use rayon::prelude::*;
+
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -38,7 +38,7 @@ pub fn compute_freezing_level(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> Wrf
     let nz = f.nz;
 
     let mut fzlev = vec![0.0f64; nxy];
-    fzlev.par_iter_mut().enumerate().for_each(|(ij, fz_val)| {
+    fzlev.iter_mut().enumerate().for_each(|(ij, fz_val)| {
         for k in 0..nz - 1 {
             let idx0 = k * nxy + ij;
             let idx1 = (k + 1) * nxy + ij;
@@ -69,7 +69,7 @@ pub fn compute_wet_bulb_0(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResu
     let nz = f.nz;
 
     let mut wb0 = vec![0.0f64; nxy];
-    wb0.par_iter_mut().enumerate().for_each(|(ij, wb0_val)| {
+    wb0.iter_mut().enumerate().for_each(|(ij, wb0_val)| {
         // Compute wet-bulb at each level, find first crossing below 0°C
         let mut prev_twb = f64::NAN;
         let mut prev_h = 0.0;
@@ -103,9 +103,9 @@ pub fn compute_theta_w(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
     let qv = f.qvapor(t)?;
 
     Ok(p_hpa
-        .par_iter()
-        .zip(tc.par_iter())
-        .zip(qv.par_iter())
+        .iter()
+        .zip(tc.iter())
+        .zip(qv.iter())
         .map(|((p, t_c), q)| {
             let q = q.max(1e-10);
             let e = q * p / (0.622 + q);
@@ -128,7 +128,7 @@ pub fn compute_fosberg(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
     let nxy = f.nxy();
 
     Ok((0..nxy)
-        .into_par_iter()
+        .into_iter()
         .map(|ij| {
             let t_k = t2[ij];
             let t_c = t_k - 273.15;
@@ -155,7 +155,7 @@ pub fn compute_haines(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<V
     let nz = f.nz;
 
     let mut haines = vec![0.0f64; nxy];
-    haines.par_iter_mut().enumerate().for_each(|(ij, h_val)| {
+    haines.iter_mut().enumerate().for_each(|(ij, h_val)| {
         // Find T and Td at 950, 850 hPa
         let mut t950 = 0.0f64;
         let mut t850 = 0.0f64;
@@ -202,7 +202,7 @@ pub fn compute_hdw(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let nxy = f.nxy();
 
     Ok((0..nxy)
-        .into_par_iter()
+        .into_iter()
         .map(|ij| {
             let t_c = t2[ij] - 273.15;
             let p_hpa = psfc[ij] / 100.0;
@@ -264,7 +264,7 @@ pub fn compute_lapse_rate(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
     let nxy = nx * ny;
 
     let mut lr = vec![0.0f64; nxy];
-    lr.par_iter_mut().enumerate().for_each(|(ij, lr_val)| {
+    lr.iter_mut().enumerate().for_each(|(ij, lr_val)| {
         // Helper: temperature (or virtual temperature) at a 3-D index
         let temp_at = |idx: usize| -> f64 {
             let t_c = tc[idx];
