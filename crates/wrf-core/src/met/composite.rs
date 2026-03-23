@@ -1258,12 +1258,12 @@ pub fn interp_to_pressure_level(
                 (p_col, f_col)
             };
 
-            // Clamp: if target is outside the column range, return boundary value
+            // Out of range: return NaN (target is underground or above model top)
             if target_level >= p_prof[0] {
-                return f_prof[0];
+                return f64::NAN;
             }
             if target_level <= p_prof[p_prof.len() - 1] {
-                return f_prof[f_prof.len() - 1];
+                return f64::NAN;
             }
 
             // Find the bracketing levels and interpolate in ln(p) space
@@ -1324,7 +1324,13 @@ pub fn interp_to_height_level(
                 (h_col, f_col)
             };
 
-            // Use the existing linear height interpolation helper
+            // Return NaN if target is outside the column range
+            if h_prof.is_empty() {
+                return f64::NAN;
+            }
+            if target_level <= h_prof[0] || target_level >= h_prof[h_prof.len() - 1] {
+                return f64::NAN;
+            }
             interp_at_height(target_level, &h_prof, &f_prof)
         })
         .collect()

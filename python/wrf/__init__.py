@@ -62,7 +62,7 @@ __all__ = [
     "latlon_coords",
     "ll_to_xy",
 ]
-__version__ = "0.2.22"
+__version__ = "0.2.23"
 
 # ── Optional plotting imports (require matplotlib) ──
 try:
@@ -442,16 +442,7 @@ def interplevel(field_3d, vert_coord_3d, target_level):
             )
             result = np.where(mask, interped, result)
 
-        # Extrapolate for points still NaN: above the highest or below
-        # the lowest pressure level.
-        still_nan = np.isnan(result)
-        if np.any(still_nan):
-            # If target pressure > surface (below ground), use surface value
-            below_sfc = still_nan & (vert_coord_3d[0, :, :] < target_2d)
-            result = np.where(below_sfc, field_3d[0, :, :], result)
-            # If target pressure < model top, use top value
-            above_top = still_nan & (vert_coord_3d[-1, :, :] > target_2d)
-            result = np.where(above_top, field_3d[-1, :, :], result)
+        # Points still NaN are underground or above model top -- leave as NaN
     else:
         # Linear height interpolation
         for k in range(nz - 1):
@@ -470,13 +461,7 @@ def interplevel(field_3d, vert_coord_3d, target_level):
             )
             result = np.where(mask, interped, result)
 
-        # Extrapolate boundary values
-        still_nan = np.isnan(result)
-        if np.any(still_nan):
-            below_sfc = still_nan & (vert_coord_3d[0, :, :] > target_level)
-            result = np.where(below_sfc, field_3d[0, :, :], result)
-            above_top = still_nan & (vert_coord_3d[-1, :, :] < target_level)
-            result = np.where(above_top, field_3d[-1, :, :], result)
+        # Points still NaN are underground or above model top -- leave as NaN
 
     return result
 
