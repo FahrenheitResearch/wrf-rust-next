@@ -389,6 +389,15 @@ impl WrfFile {
         self.nx * self.ny * self.nz
     }
 
+    /// Clear the intermediate-result cache, freeing memory.
+    ///
+    /// Called automatically after each `getvar` call so that 3-D
+    /// intermediates (full_pressure, temperature, etc.) do not persist
+    /// beyond the computation that needed them.
+    pub fn clear_cache(&self) {
+        self.cache.lock().unwrap().clear();
+    }
+
     // ── Cached derived fields ──
 
     fn cached_or_compute(

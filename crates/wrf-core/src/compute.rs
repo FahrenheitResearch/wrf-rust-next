@@ -84,6 +84,10 @@ pub fn getvar(
 
     let mut data = (vardef.compute)(file, t, opts)?;
 
+    // Free cached intermediates (full_pressure, temperature, etc.)
+    // so they don't persist beyond this computation.
+    file.clear_cache();
+
     let shape = match vardef.dim {
         VarDim::TwoD => vec![file.ny, file.nx],
         VarDim::ThreeD => vec![file.nz, file.ny, file.nx],
