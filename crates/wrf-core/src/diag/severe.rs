@@ -204,14 +204,33 @@ pub fn compute_ehi(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f
 
 /// Critical angle (degrees). `[ny, nx]`
 pub fn compute_critical_angle(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    let u = f.u_destag(t)?;
-    let v = f.v_destag(t)?;
+    let u_grid = f.u_destag(t)?;
+    let v_grid = f.v_destag(t)?;
+    let u10_grid = f.u10(t)?;
+    let v10_grid = f.v10(t)?;
+    let sina = f.sinalpha(t)?;
+    let cosa = f.cosalpha(t)?;
     let h_agl = f.height_agl(t)?;
 
     let nx = f.nx;
     let ny = f.ny;
     let nz = f.nz;
     let nxy = nx * ny;
+
+    let mut u = vec![0.0f64; u_grid.len()];
+    let mut v = vec![0.0f64; v_grid.len()];
+    for idx in 0..u_grid.len() {
+        let ij = idx % nxy;
+        u[idx] = u_grid[idx] * cosa[ij] - v_grid[idx] * sina[ij];
+        v[idx] = u_grid[idx] * sina[ij] + v_grid[idx] * cosa[ij];
+    }
+
+    let mut u10 = vec![0.0f64; nxy];
+    let mut v10 = vec![0.0f64; nxy];
+    for ij in 0..nxy {
+        u10[ij] = u10_grid[ij] * cosa[ij] - v10_grid[ij] * sina[ij];
+        v10[ij] = u10_grid[ij] * sina[ij] + v10_grid[ij] * cosa[ij];
+    }
 
     let mut result = vec![0.0f64; nxy];
     result.iter_mut().enumerate().for_each(|(ij, val)| {
@@ -226,14 +245,14 @@ pub fn compute_critical_angle(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfR
             h_prof.push(h_agl[idx]);
         }
 
-        // Get Bunkers RM storm motion
-        let ((sm_u, sm_v), _, _) =
-            crate::met::wind::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
-
-        // Interpolate wind at 500m
-        let (u_500, v_500) = interp_wind_at_height(&u_prof, &v_prof, &h_prof, 500.0);
-
-        *val = crate::met::wind::critical_angle(sm_u, sm_v, u_prof[0], v_prof[0], u_500, v_500);
+        *val = critical_angle_from_profile(
+            &u_prof,
+            &v_prof,
+            &h_prof,
+            u10[ij],
+            v10[ij],
+            opts.storm_motion,
+        );
     });
 
     Ok(result)
@@ -382,5 +401,75 @@ fn interp_wind_at_height(
     } else {
         let last = h_prof.len() - 1;
         (u_prof[last], v_prof[last])
+    }
+}
+
+fn critical_angle_from_profile(
+    u_prof: &[f64],
+    v_prof: &[f64],
+    h_prof: &[f64],
+    u_sfc: f64,
+    v_sfc: f64,
+    storm_motion: Option<(f64, f64)>,
+) -> f64 {
+    let mut u_aug = Vec::with_capacity(u_prof.len() + 1);
+    let mut v_aug = Vec::with_capacity(v_prof.len() + 1);
+    let mut h_aug = Vec::with_capacity(h_prof.len() + 1);
+
+    u_aug.push(u_sfc);
+    v_aug.push(v_sfc);
+    h_aug.push(10.0);
+
+    u_aug.extend_from_slice(u_prof);
+    v_aug.extend_from_slice(v_prof);
+    h_aug.extend_from_slice(h_prof);
+
+    let (sm_u, sm_v) = storm_motion.unwrap_or_else(|| {
+        let ((ru, rv), _, _) = crate::met::wind::bunkers_storm_motion(&u_aug, &v_aug, &h_aug);
+        (ru, rv)
+    });
+    let (u_500, v_500) = interp_wind_at_height(&u_aug, &v_aug, &h_aug, 500.0);
+
+    crate::met::wind::critical_angle(sm_u, sm_v, u_sfc, v_sfc, u_500, v_500)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn critical_angle_uses_10m_surface_wind() {
+        let u_prof = [18.0, 24.0, 32.0, 42.0];
+        let v_prof = [8.0, 14.0, 20.0, 28.0];
+        let h_prof = [100.0, 500.0, 1500.0, 6000.0];
+        let u10 = 5.0;
+        let v10 = 2.0;
+
+        let actual = critical_angle_from_profile(&u_prof, &v_prof, &h_prof, u10, v10, None);
+
+        let mut u_aug = vec![u10];
+        let mut v_aug = vec![v10];
+        let mut h_aug = vec![10.0];
+        u_aug.extend_from_slice(&u_prof);
+        v_aug.extend_from_slice(&v_prof);
+        h_aug.extend_from_slice(&h_prof);
+
+        let ((sm_u, sm_v), _, _) = crate::met::wind::bunkers_storm_motion(&u_aug, &v_aug, &h_aug);
+        let (u_500, v_500) = interp_wind_at_height(&u_aug, &v_aug, &h_aug, 500.0);
+        let expected = crate::met::wind::critical_angle(sm_u, sm_v, u10, v10, u_500, v_500);
+        let first_level = crate::met::wind::critical_angle(
+            sm_u,
+            sm_v,
+            u_prof[0],
+            v_prof[0],
+            u_500,
+            v_500,
+        );
+
+        assert!((actual - expected).abs() < 1.0e-9);
+        assert!(
+            (actual - first_level).abs() > 1.0e-3,
+            "10 m and first-model-level critical angles should differ in this profile"
+        );
     }
 }

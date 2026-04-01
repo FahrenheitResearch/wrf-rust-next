@@ -23,6 +23,11 @@ pub fn compute_pressure(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult
     f.full_pressure(t)
 }
 
+/// Full pressure (hPa). `[nz, ny, nx]`
+pub fn compute_pressure_hpa(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
+    f.pressure_hpa(t)
+}
+
 /// Height MSL (m). `[nz, ny, nx]`
 pub fn compute_height(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     f.height_msl(t)

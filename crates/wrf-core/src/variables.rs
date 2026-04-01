@@ -40,7 +40,15 @@ pub static VARS: &[VarDef] = &[
     // ── Phase 1: Foundation ──
     VarDef {
         name: "pressure",
-        aliases: &["pres", "p"],
+        aliases: &[],
+        description: "Full model pressure",
+        default_units: "hPa",
+        dim: VarDim::ThreeD,
+        compute: dpres::compute_pressure_hpa,
+    },
+    VarDef {
+        name: "pres",
+        aliases: &["p", "pressure_pa"],
         description: "Full model pressure",
         default_units: "Pa",
         dim: VarDim::ThreeD,
@@ -337,7 +345,7 @@ pub static VARS: &[VarDef] = &[
     },
     VarDef {
         name: "cape2d",
-        aliases: &[],
+        aliases: &["cape_2d"],
         description: "CAPE/CIN/LCL/LFC (backward-compat tuple)",
         default_units: "J/kg",
         dim: VarDim::TwoD,
@@ -345,7 +353,7 @@ pub static VARS: &[VarDef] = &[
     },
     VarDef {
         name: "cape3d",
-        aliases: &[],
+        aliases: &["cape_3d"],
         description: "3-D CAPE field",
         default_units: "J/kg",
         dim: VarDim::ThreeD,
@@ -493,7 +501,7 @@ pub static VARS: &[VarDef] = &[
     },
     VarDef {
         name: "maxdbz",
-        aliases: &["max_reflectivity", "composite_reflectivity"],
+        aliases: &["max_reflectivity", "composite_reflectivity", "mdbz"],
         description: "Maximum (composite) reflectivity",
         default_units: "dBZ",
         dim: VarDim::TwoD,
@@ -517,7 +525,7 @@ pub static VARS: &[VarDef] = &[
     },
     VarDef {
         name: "uhel",
-        aliases: &["updraft_helicity"],
+        aliases: &["updraft_helicity", "helicity"],
         description: "Updraft helicity",
         default_units: "m2/s2",
         dim: VarDim::TwoD,
@@ -728,4 +736,24 @@ pub fn get_var_def(name: &str) -> Option<&'static VarDef> {
     VARS.iter().find(|v| {
         v.name == lower || v.aliases.iter().any(|a| *a == lower)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pressure_defaults_match_wrf_python_names() {
+        assert_eq!(get_var_def("pressure").unwrap().default_units, "hPa");
+        assert_eq!(get_var_def("pres").unwrap().default_units, "Pa");
+        assert_eq!(get_var_def("p").unwrap().default_units, "Pa");
+    }
+
+    #[test]
+    fn common_wrf_python_aliases_resolve() {
+        assert_eq!(get_var_def("cape_2d").unwrap().name, "cape2d");
+        assert_eq!(get_var_def("cape_3d").unwrap().name, "cape3d");
+        assert_eq!(get_var_def("mdbz").unwrap().name, "maxdbz");
+        assert_eq!(get_var_def("helicity").unwrap().name, "uhel");
+    }
 }

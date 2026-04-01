@@ -135,8 +135,8 @@ class WrfFile:
     def __init__(self, path_or_dataset):
         if isinstance(path_or_dataset, _WrfFile):
             self._inner = path_or_dataset
-        elif isinstance(path_or_dataset, str):
-            self._inner = _WrfFile(path_or_dataset)
+        elif isinstance(path_or_dataset, (str, os.PathLike)):
+            self._inner = _WrfFile(os.fspath(path_or_dataset))
         elif hasattr(path_or_dataset, "filepath"):
             # netCDF4.Dataset -- extract the file path and open natively
             _warn_dataset_reopen()
@@ -203,6 +203,105 @@ def _ensure_wrffile(f):
     return WrfFile(f)
 
 
+_GETVAR_NAME_ALIASES = {
+    "cape_2d": "cape2d",
+    "cape_3d": "cape3d",
+    "mdbz": "maxdbz",
+    "helicity": "uhel",
+}
+
+
+def _normalize_var_name(name):
+    name_str = str(name)
+    return _GETVAR_NAME_ALIASES.get(name_str.lower(), name_str)
+
+
+def _normalize_single_timeidx(wf, timeidx):
+    if timeidx is ALL_TIMES:
+        return ALL_TIMES
+
+    if isinstance(timeidx, np.integer):
+        timeidx = int(timeidx)
+
+    if not isinstance(timeidx, int):
+        return timeidx
+
+    if timeidx < 0:
+        timeidx += wf.nt
+
+    if timeidx < 0 or timeidx >= wf.nt:
+        raise IndexError(f"timeidx {timeidx} out of range for file with {wf.nt} times")
+
+    return timeidx
+
+
+def _normalize_sequence_timeidx(wrffiles, timeidx):
+    total_nt = sum(wf.nt for wf in wrffiles)
+
+    if isinstance(timeidx, np.integer):
+        timeidx = int(timeidx)
+
+    if not isinstance(timeidx, int):
+        return timeidx
+
+    if timeidx < 0:
+        timeidx += total_nt
+
+    if timeidx < 0 or timeidx >= total_nt:
+        raise IndexError(
+            f"timeidx {timeidx} out of range for file sequence with {total_nt} times"
+        )
+
+    return timeidx
+
+
+def _extract_wrffile_sequence(wrffile):
+    if isinstance(wrffile, (list, tuple)):
+        if not wrffile:
+            raise ValueError("wrffile sequence is empty")
+        return [_ensure_wrffile(item) for item in wrffile]
+    return None
+
+
+def _get_times_result(wrffiles, timeidx):
+    if len(wrffiles) == 1:
+        times = np.asarray(wrffiles[0].times())
+        resolved = _normalize_single_timeidx(wrffiles[0], timeidx)
+    else:
+        times = np.asarray(
+            [t for wf in wrffiles for t in wf.times()]
+        )
+        resolved = _normalize_sequence_timeidx(wrffiles, timeidx)
+
+    if resolved is ALL_TIMES:
+        return times
+    return times[resolved]
+
+
+def _getvar_sequence_cat(wrffiles, name, timeidx, squeeze, kwargs):
+    if name == "times":
+        return _get_times_result(wrffiles, timeidx)
+
+    resolved = _normalize_sequence_timeidx(wrffiles, timeidx)
+    if resolved is ALL_TIMES:
+        arrays = [
+            getvar(wf, name, timeidx=ALL_TIMES, squeeze=False, **kwargs)
+            for wf in wrffiles
+        ]
+        result = np.concatenate(arrays, axis=0)
+        if squeeze and result.shape[0] == 1:
+            result = result[0]
+        return result
+
+    idx = resolved
+    for wf in wrffiles:
+        if idx < wf.nt:
+            return getvar(wf, name, timeidx=idx, squeeze=squeeze, **kwargs)
+        idx -= wf.nt
+
+    raise IndexError(f"timeidx {resolved} out of range for file sequence")
+
+
 def getvar(
     wrffile,
     name,
@@ -223,14 +322,18 @@ def getvar(
     lake_interp=None,
     use_varint=None,
     use_liqskin=None,
+    method=None,
+    cache=None,
+    meta=None,
     squeeze=True,
 ):
     """Compute a diagnostic variable from a WRF file.
 
     Parameters
     ----------
-    wrffile : WrfFile, str, or netCDF4.Dataset
-        The WRF output file.
+    wrffile : WrfFile, str, netCDF4.Dataset, or sequence of them
+        The WRF output file, or a list/tuple of files for simple
+        wrf-python-style concatenation.
     name : str
         Variable name (e.g. "temp", "slp", "sbcape", "srh1").
         Use ``list_variables()`` to see all supported names.
@@ -273,6 +376,15 @@ def getvar(
     use_liqskin : bool, optional
         If True, use bright-band liquid-skin correction for reflectivity.
         Default False matches wrf-python.
+    method : str, optional
+        Multi-file aggregation method. ``None`` and ``"cat"`` are supported.
+        ``"join"`` is accepted for single files but not implemented for
+        multi-file input.
+    cache : any, optional
+        Accepted for compatibility with wrf-python. Ignored.
+    meta : bool, optional
+        Accepted for compatibility with wrf-python. wrf-rust returns NumPy
+        arrays, so this flag is ignored.
     squeeze : bool
         If True (default), remove length-1 leading dimensions.
 
@@ -282,7 +394,13 @@ def getvar(
         2-D ``(ny, nx)`` or 3-D ``(nz, ny, nx)`` array, or with a
         leading time axis when ``timeidx=ALL_TIMES``.
     """
-    wf = _ensure_wrffile(wrffile)
+    if method not in (None, "cat", "join"):
+        raise ValueError("method must be one of None, 'cat', or 'join'")
+
+    del cache, meta
+
+    name = _normalize_var_name(name)
+    wrffiles = _extract_wrffile_sequence(wrffile)
 
     kwargs = dict(
         units=units,
@@ -303,7 +421,24 @@ def getvar(
         use_liqskin=use_liqskin,
     )
 
-    if timeidx is ALL_TIMES:
+    if wrffiles is not None:
+        if len(wrffiles) == 1:
+            wf = wrffiles[0]
+        else:
+            if method == "join":
+                raise NotImplementedError(
+                    "method='join' is not implemented for multi-file input"
+                )
+            return _getvar_sequence_cat(wrffiles, name, timeidx, squeeze, kwargs)
+    else:
+        wf = _ensure_wrffile(wrffile)
+
+    resolved_timeidx = _normalize_single_timeidx(wf, timeidx)
+
+    if name == "times":
+        return _get_times_result([wf], resolved_timeidx)
+
+    if resolved_timeidx is ALL_TIMES:
         arrays = []
         for t in range(wf.nt):
             arr = wf._inner.getvar(name, timeidx=t, **kwargs)
@@ -313,7 +448,7 @@ def getvar(
             result = result[0]
         return result
     else:
-        return wf._inner.getvar(name, timeidx=timeidx, **kwargs)
+        return wf._inner.getvar(name, timeidx=resolved_timeidx, **kwargs)
 
 
 def list_variables():

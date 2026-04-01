@@ -100,7 +100,7 @@ python -m wrf panel wrfout_d01_2024-06-01_00:00:00 sbcape srh1 stp -o severe.png
 
 ## Benchmark vs wrf-python
 
-Tested on a 199x199x79 WRF grid. All values match exactly (rel_err=0.00).
+Benchmarked on a 199x199x79 WRF grid. The fields below matched wrf-python on that case, but broader scientific equivalence still depends on variable and workflow.
 
 | Variable | wrf-python | wrf-rust | Speedup |
 |---|---|---|---|
@@ -126,6 +126,8 @@ Plus 17 variables wrf-python doesn't have (STP, SCP, EHI, critical angle, shear,
 ### Pressure & height
 
 `pressure` `slp` `height` `height_agl` `terrain` `geopt` `omega`
+
+`pressure` defaults to hPa for wrf-python compatibility. Use `pres` / `p` or `units="Pa"` when you want Pascals.
 
 ### Moisture
 

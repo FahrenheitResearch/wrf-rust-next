@@ -48,9 +48,7 @@ fn compute_cape_fields(
         return Ok((cape, cin, lcl, lfc));
     }
 
-    // With top_m: use column-by-column cape_cin_core
-    // Need hPa pressure for the dewpoint formula; compute it locally.
-    let pres_hpa: Vec<f64> = pres.iter().map(|p| p / 100.0).collect();
+    // With top_m: use column-by-column cape_cin_core.
 
     let mut cape = vec![0.0f64; nxy];
     let mut cin = vec![0.0f64; nxy];
@@ -85,11 +83,10 @@ fn compute_cape_fields(
             }
 
             // Pass hPa/C -- consistent units so auto-detect doesn't double-convert
-            let psfc_hpa = psfc[ij] / 100.0;
-            let t2_c = t2[ij] - 273.15;
+            let (psfc_hpa, t2_c, td2_c) = surface_parcel_from_2m(psfc[ij], t2[ij], q2[ij]);
             let (c, ci, l, lf) = crate::met::thermo::cape_cin_core(
                 &p_prof, &t_prof, &td_prof, &h_prof,
-                psfc_hpa, t2_c, td_prof.first().copied().unwrap_or(0.0),
+                psfc_hpa, t2_c, td2_c,
                 parcel_type, 100.0, 300.0, top_m,
             );
 
@@ -104,6 +101,13 @@ fn compute_cape_fields(
 
 fn resolve_parcel_type(opts: &ComputeOpts, default: &str) -> String {
     opts.parcel_type.as_deref().unwrap_or(default).to_lowercase()
+}
+
+fn surface_parcel_from_2m(psfc_pa: f64, t2_k: f64, q2_kgkg: f64) -> (f64, f64, f64) {
+    let psfc_hpa = psfc_pa / 100.0;
+    let t2_c = t2_k - 273.15;
+    let td2_c = crate::met::composite::dewpoint_from_q(q2_kgkg, psfc_hpa).min(t2_c);
+    (psfc_hpa, t2_c, td2_c)
 }
 
 // ── Public compute functions ──
@@ -186,12 +190,7 @@ pub fn compute_el(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f6
 
         // Select parcel based on parcel_type, then build a modified profile
         // with the parcel at the base for the el() function.
-        let psfc_hpa = psfc_raw[ij] / 100.0;
-        let t2_c = t2_raw[ij] - 273.15;
-        let q2_v = q2[ij].max(1e-10);
-        let e2 = q2_v * psfc_hpa / (0.622 + q2_v);
-        let ln_e2 = (e2 / 6.112).max(1e-10).ln();
-        let td2_c = (243.5 * ln_e2) / (17.67 - ln_e2);
+        let (psfc_hpa, t2_c, td2_c) = surface_parcel_from_2m(psfc_raw[ij], t2_raw[ij], q2[ij]);
 
         // Prepend surface data for parcel selection
         let mut full_p = vec![psfc_hpa];
@@ -690,4 +689,61 @@ pub fn compute_effective_inflow_cape(
     });
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surface_parcel_responds_to_q2() {
+        let (_, t2_c, td_dry) = surface_parcel_from_2m(100_000.0, 303.15, 0.004);
+        let (_, _, td_moist) = surface_parcel_from_2m(100_000.0, 303.15, 0.016);
+
+        assert!(td_moist > td_dry);
+        assert!(td_moist <= t2_c);
+    }
+
+    #[test]
+    fn truncated_cape_depends_on_surface_moisture() {
+        let p_prof = [950.0, 900.0, 850.0, 800.0, 750.0, 700.0, 650.0];
+        let t_prof = [25.0, 22.0, 18.0, 14.0, 10.0, 6.0, 2.0];
+        let td_prof = [14.0, 10.0, 6.0, 2.0, -2.0, -8.0, -16.0];
+        let h_prof = [250.0, 750.0, 1250.0, 1750.0, 2250.0, 2750.0, 3250.0];
+
+        let (psfc_hpa, t2_c, td2_dry) = surface_parcel_from_2m(100_000.0, 303.15, 0.004);
+        let (_, _, td2_moist) = surface_parcel_from_2m(100_000.0, 303.15, 0.016);
+
+        let (cape_dry, _, _, _) = crate::met::thermo::cape_cin_core(
+            &p_prof,
+            &t_prof,
+            &td_prof,
+            &h_prof,
+            psfc_hpa,
+            t2_c,
+            td2_dry,
+            "sb",
+            100.0,
+            300.0,
+            Some(3000.0),
+        );
+        let (cape_moist, _, _, _) = crate::met::thermo::cape_cin_core(
+            &p_prof,
+            &t_prof,
+            &td_prof,
+            &h_prof,
+            psfc_hpa,
+            t2_c,
+            td2_moist,
+            "sb",
+            100.0,
+            300.0,
+            Some(3000.0),
+        );
+
+        assert!(
+            cape_moist > cape_dry + 1.0,
+            "expected truncated CAPE to respond to 2m moisture, got dry={cape_dry} moist={cape_moist}"
+        );
+    }
 }
