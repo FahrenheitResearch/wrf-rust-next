@@ -86,12 +86,40 @@ Do not leave out the WPS geographical data.
 3. Link meteorological GRIB input
 4. Choose the correct Vtable
 5. Run `ungrib.exe`
-6. Run `metgrid.exe`
-7. Copy `met_em*` into the WRF run directory
-8. Prepare `namelist.input`
-9. Run `real.exe`
-10. Confirm `wrfinput_d01` and `wrfbdy_d01` exist
-11. Run `wrf.exe`
+6. If the forcing uses multiple GRIB families, repeat `ungrib.exe` with distinct prefixes and list them in `fg_name`
+7. Run `metgrid.exe`
+8. Copy `met_em*` into the WRF run directory
+9. Prepare `namelist.input`
+10. Run `real.exe`
+11. Confirm `wrfinput_d01` and `wrfbdy_d01` exist
+12. Run `wrf.exe`
+
+## ECMWF-specific WPS pattern
+
+If a user is staging ECMWF fields separately, a practical community pattern is:
+
+- pressure fields under a prefix like `FILE`
+- surface fields under a prefix like `SFILE`
+- soil fields under a prefix like `SOILFILE`
+- `fg_name = 'SFILE', 'SOILFILE', 'FILE'` in `namelist.wps`
+
+That pattern is useful, but remind users it is not magic by itself:
+
+- they still need the correct Vtable and field coverage
+- they may need to run `ungrib.exe` multiple times
+- the exact prefixes can vary as long as they are used consistently
+
+## ECMWF compression gotcha
+
+If ECMWF GRIB2 files fail in `ungrib.exe`, check whether they need to be rewritten first with `cdo`.
+
+Example:
+
+```bash
+cdo -f grb2 copy input.grib2 output.grib2
+```
+
+Community scripts often automate this because CCSDS-compressed files are a real WPS pain point.
 
 ## Sanity checks
 

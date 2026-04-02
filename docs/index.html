@@ -552,6 +552,30 @@ export WRF_DIR=/path/to/WRF
               </article>
             </div>
 
+            <div class="notice">
+              <p>
+                <strong>Useful community pattern for ECMWF + WPS:</strong> if you split
+                ECMWF forcing into pressure, surface, and soil GRIB streams, a common WPS
+                pattern is to run <span class="mono">ungrib.exe</span> separately with
+                prefixes like <span class="mono">FILE</span>,
+                <span class="mono">SFILE</span>, and
+                <span class="mono">SOILFILE</span>, then point
+                <span class="mono">metgrid.exe</span> at them with
+                <span class="mono">fg_name = 'SFILE', 'SOILFILE', 'FILE'</span>.
+              </p>
+              <p>
+                Also expect some ECMWF GRIB2 downloads to arrive with CCSDS compression
+                that can trip up <span class="mono">ungrib.exe</span>. If that happens,
+                a practical workaround is decompressing them first with
+                <span class="mono">cdo -f grb2 copy input.grib2 output.grib2</span>.
+              </p>
+              <p>
+                If you find community Python snippets for this workflow, treat them as
+                patterns, not drop-in tooling. They often depend on a larger project
+                wrapper, custom helper functions, and local path conventions.
+              </p>
+            </div>
+
             <table class="matrix">
               <thead>
                 <tr>

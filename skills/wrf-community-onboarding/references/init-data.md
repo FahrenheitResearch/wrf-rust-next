@@ -33,6 +33,27 @@ Those are not the same thing.
 - For current real-time forecasts, point users to the open portal first.
 - If they want automation, tell them to look at `ecmwf-opendata`.
 - If they ask where the API key goes, clarify that API keys are mainly for CDS/archive-style access, not the simple open-data portal workflow.
+- If they find community automation snippets, warn them that many are fragments from a larger project, not standalone scripts.
+
+### Practical community pattern
+
+One useful ECMWF + WPS pattern from community workflows:
+
+- download pressure-level, surface, and soil data separately
+- run `ungrib.exe` separately for each prefix family
+- use prefixes like `FILE`, `SFILE`, and `SOILFILE`
+- point `metgrid.exe` at them with `fg_name = 'SFILE', 'SOILFILE', 'FILE'`
+
+This is a useful pattern to mention when a user is confused about how multiple ECMWF fields get staged into WPS.
+
+### Compression gotcha
+
+Some ECMWF GRIB2 files may arrive with CCSDS compression that can break `ungrib.exe`.
+
+Practical workaround:
+
+- use `cdo -f grb2 copy input.grib2 output.grib2` to rewrite/decompress the file first
+- if a user sees `ungrib.exe` failing on otherwise valid ECMWF files, this is one of the first things to check
 
 ### Good wording
 
@@ -80,4 +101,3 @@ Common file family:
 - HRRR and RAP are regional and time-sensitive.
 - GFS is broad and simple but not the highest-end Euro choice.
 - ECMWF access wording should always include the date because access policy has changed over time.
-
