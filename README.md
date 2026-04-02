@@ -10,6 +10,13 @@ pip install wrf-rust
 
 Pre-built wheels for Python 3.10-3.13 on Linux, macOS, and Windows. No Rust toolchain, no system libraries, no conda required.
 
+## Community Guide
+
+The repo now includes a full WRF community setup guide for Windows, WSL 2, real-data initialization, domain sizing, and troubleshooting:
+
+- Pages source: [docs/index.html](docs/index.html)
+- Codex skill: [skills/wrf-community-onboarding/SKILL.md](skills/wrf-community-onboarding/SKILL.md)
+
 ## Usage
 
 ```python
