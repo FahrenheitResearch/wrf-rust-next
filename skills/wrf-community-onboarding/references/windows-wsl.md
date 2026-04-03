@@ -57,6 +57,17 @@ That means a `32 GB` Windows box may only give WSL about `16 GB` unless the user
 File location:
 
 - `%UserProfile%\.wslconfig`
+- usually `C:\Users\<your-name>\.wslconfig`
+
+Beginner-safe way to open or create it:
+
+```powershell
+notepad $env:UserProfile\.wslconfig
+```
+
+Important beginner gotcha:
+
+- turn on File Explorer file extensions first so Windows does not silently create `.wslconfig.txt`
 
 ### 32 GB host
 
@@ -92,6 +103,44 @@ wsl --shutdown
 ```
 
 Wait a few seconds before reopening Ubuntu. Microsoft notes an "8 second rule" in practice: config changes do not fully apply until WSL actually stops.
+
+## Very common beginner confusion around `.wslconfig`
+
+### "I cannot find where to put it"
+
+Fastest answer:
+
+1. Open File Explorer
+2. Click the address bar
+3. Type `%UserProfile%`
+4. Press Enter
+5. Put `.wslconfig` there
+
+It does **not** go inside the Ubuntu filesystem.
+
+### "The file is missing"
+
+That is normal on a new machine.
+
+Create it yourself with:
+
+```powershell
+notepad $env:UserProfile\.wslconfig
+```
+
+### "Windows saved `.wslconfig.txt` instead"
+
+Usually means file extensions were hidden.
+
+Fast fix:
+
+- In File Explorer, enable `View > Show > File name extensions`
+- Rename the file so it is exactly `.wslconfig`
+- Run:
+
+```powershell
+wsl --shutdown
+```
 
 ## Common documented failure modes
 

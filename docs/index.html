@@ -297,7 +297,13 @@ cp -R skills/wrf-community-onboarding ~/.codex/skills/</code></pre>
                   <p><strong>Aggressive ceiling:</strong> <span id="out-aggressive">around 300</span></p>
                 </div>
                 <div class="card">
-                  <h3>Drop this into <span class="mono">.wslconfig</span></h3>
+                  <h3>Put this in <span class="mono">C:\Users\YOU\.wslconfig</span></h3>
+                  <p class="small">
+                    In File Explorer, click the address bar, type <span class="mono">%UserProfile%</span>,
+                    and press Enter. If the file does not exist yet, create a new text file,
+                    rename it to <span class="mono">.wslconfig</span>, and make sure it is not really
+                    <span class="mono">.wslconfig.txt</span>.
+                  </p>
                   <pre class="shell" id="wsl-config-block"><code>[wsl2]
 memory=24GB
 processors=12
@@ -465,6 +471,12 @@ swap=16GB</code></pre>
                     <button class="button secondary" id="copy-wsl" type="button">Copy</button>
                   </div>
                 </div>
+                <p class="small">
+                  Save it at <span class="mono">C:\Users\YOU\.wslconfig</span> or
+                  <span class="mono">%UserProfile%\.wslconfig</span>. If Windows hides file
+                  extensions, turn them on first so you do not accidentally create
+                  <span class="mono">.wslconfig.txt</span>.
+                </p>
                 <pre class="shell"><code id="preflight-wsl-config">[wsl2]
 memory=24GB
 processors=12
@@ -534,6 +546,37 @@ wsl -l -v</code></pre>
               </div>
             </div>
 
+            <div class="grid-3">
+              <div class="card">
+                <h3>Where does <span class="mono">.wslconfig</span> go?</h3>
+                <p>
+                  It is a Windows-side file in your user profile, not inside Ubuntu.
+                  The normal path is <span class="mono">C:\Users\YOUR_NAME\.wslconfig</span>.
+                </p>
+                <p>
+                  Easiest way to get there: open File Explorer, click the address bar,
+                  type <span class="mono">%UserProfile%</span>, and press Enter.
+                </p>
+              </div>
+              <div class="card">
+                <h3>What if the file is missing?</h3>
+                <p>
+                  That is normal on a new machine. Create it yourself, then paste the
+                  config block from this page into it and save.
+                </p>
+                <pre class="shell"><code>notepad $env:UserProfile\.wslconfig</code></pre>
+              </div>
+              <div class="card">
+                <h3>Most common beginner mistake</h3>
+                <p>
+                  Windows creates <span class="mono">.wslconfig.txt</span> because file
+                  extensions were hidden. Turn on
+                  <strong>View &gt; Show &gt; File name extensions</strong> in File Explorer,
+                  then rename the file so it is exactly <span class="mono">.wslconfig</span>.
+                </p>
+              </div>
+            </div>
+
             <div class="stats-grid">
               <div class="stat">
                 <h3>Default WSL memory</h3>
@@ -590,6 +633,61 @@ bcdedit /enum | findstr -i hypervisorlaunchtype</code></pre>
                   then check Microsoft's DNS/firewall troubleshooting guidance.
                 </p>
               </div>
+            </div>
+
+            <div class="details-stack">
+              <details class="branch">
+                <summary>I cannot find where to put the <span class="mono">.wslconfig</span> file</summary>
+                <div class="branch-body">
+                  <h4>Fastest path</h4>
+                  <ol class="checklist">
+                    <li>Open File Explorer.</li>
+                    <li>Click the address bar.</li>
+                    <li>Type <span class="mono">%UserProfile%</span> and press Enter.</li>
+                    <li>Look for a file named <span class="mono">.wslconfig</span>.</li>
+                    <li>If it is not there, create it yourself.</li>
+                  </ol>
+                  <h4>One-command shortcut</h4>
+                  <pre class="shell"><code>notepad $env:UserProfile\.wslconfig</code></pre>
+                  <p>
+                    If the file does not exist, Notepad will offer to create it.
+                  </p>
+                </div>
+              </details>
+
+              <details class="branch">
+                <summary>I saved it, but Windows made a <span class="mono">.txt</span> file</summary>
+                <div class="branch-body">
+                  <h4>Likely root cause</h4>
+                  <p>
+                    File extensions were hidden, so the real filename became
+                    <span class="mono">.wslconfig.txt</span>.
+                  </p>
+                  <h4>Fastest actions</h4>
+                  <ul class="checklist">
+                    <li>In File Explorer, turn on <strong>View &gt; Show &gt; File name extensions</strong>.</li>
+                    <li>Rename the file so it is exactly <span class="mono">.wslconfig</span>.</li>
+                    <li>Reopen it and confirm the contents still look correct.</li>
+                  </ul>
+                </div>
+              </details>
+
+              <details class="branch">
+                <summary>I saved the file, but WSL still uses the old memory limit</summary>
+                <div class="branch-body">
+                  <h4>Likely root cause</h4>
+                  <p>
+                    WSL was not fully stopped, so the new config never got applied.
+                  </p>
+                  <h4>Fastest actions</h4>
+                  <pre class="shell"><code>wsl --shutdown</code></pre>
+                  <p>
+                    Wait a few seconds, then reopen Ubuntu and continue. If it still does not
+                    apply, confirm the filename is really <span class="mono">.wslconfig</span>
+                    and that it lives in <span class="mono">%UserProfile%</span>.
+                  </p>
+                </div>
+              </details>
             </div>
           </section>
 
@@ -1435,6 +1533,10 @@ python -m wrf stats wrfout_d01_YYYY-MM-DD_HH:MM:SS sbcape slp temp</code></pre>
               <div class="faq-card">
                 <h3>Should I build from <span class="mono">/mnt/c</span>?</h3>
                 <p>No. Keep the whole workflow inside the Linux filesystem and access it from Windows through <span class="mono">\\wsl$</span>.</p>
+              </div>
+              <div class="faq-card">
+                <h3>Where do I put <span class="mono">.wslconfig</span>?</h3>
+                <p>In your Windows user folder, usually <span class="mono">C:\Users\YOUR_NAME\.wslconfig</span>. It does not live inside Ubuntu.</p>
               </div>
               <div class="faq-card">
                 <h3>Why does <span class="mono">ungrib.exe</span> say <span class="mono">GRIBFILE.AAA</span> or <span class="mono">Vtable</span> is missing?</h3>

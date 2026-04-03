@@ -32,7 +32,7 @@ export function evaluatePreflight(profile) {
   }
 
   if (profile.platform === "windows" && !profile.wslConfigApplied) {
-    items.push(item("warn", "WSL memory", "WSL is probably still using the default half-RAM limit.", "Drop the generated .wslconfig into %UserProfile%, then run wsl --shutdown before reopening Ubuntu."));
+    items.push(item("warn", "WSL memory", "WSL is probably still using the default half-RAM limit.", "Save the generated file at C:\\Users\\YOU\\.wslconfig or %UserProfile%\\.wslconfig, then run wsl --shutdown before reopening Ubuntu."));
   } else if (profile.platform === "windows") {
     items.push(item("pass", "WSL memory", "A custom .wslconfig is in play.", "Keep that file aligned with the RAM calculator above."));
   }
