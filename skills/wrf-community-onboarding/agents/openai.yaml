@@ -1,0 +1,5 @@
+interface:
+  display_name: "WRF Community Onboarding"
+  short_description: "Guide hobbyist WRF setup, init data, sizing, and triage"
+  default_prompt: "Help me install, size, initialize, run, or troubleshoot WRF on consumer hardware. Prefer the stable CPU-first path, use WSL 2 guidance when relevant, distinguish ECMWF open-data access from API-key archive access, and load only the references needed for my platform, data source, and failure mode."
+
