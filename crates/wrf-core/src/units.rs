@@ -119,7 +119,8 @@ pub fn convert_value(value: f64, from: WrfUnits, to: WrfUnits) -> WrfResult<f64>
         // ── Pressure ──
         (WrfUnits::Pascal, WrfUnits::Hectopascal | WrfUnits::Millibar) => Ok(value / 100.0),
         (WrfUnits::Hectopascal | WrfUnits::Millibar, WrfUnits::Pascal) => Ok(value * 100.0),
-        (WrfUnits::Hectopascal, WrfUnits::Millibar) | (WrfUnits::Millibar, WrfUnits::Hectopascal) => Ok(value),
+        (WrfUnits::Hectopascal, WrfUnits::Millibar)
+        | (WrfUnits::Millibar, WrfUnits::Hectopascal) => Ok(value),
         (WrfUnits::Pascal, WrfUnits::InchesOfMercury) => Ok(value / 3386.39),
         (WrfUnits::InchesOfMercury, WrfUnits::Pascal) => Ok(value * 3386.39),
         (WrfUnits::Hectopascal | WrfUnits::Millibar, WrfUnits::InchesOfMercury) => {

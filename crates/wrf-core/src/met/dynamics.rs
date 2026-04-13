@@ -5,7 +5,6 @@
 /// `dx` and `dy` are grid spacings in meters.
 ///
 /// Vendored from wx-math crate for self-contained builds.
-
 use std::f64::consts::PI;
 
 /// Earth's angular velocity (rad/s).
@@ -91,8 +90,13 @@ pub fn coriolis_parameter(lat_deg: f64) -> f64 {
 /// Absolute vorticity: relative vorticity + Coriolis parameter.
 /// `lats` is a flattened array of latitudes (degrees) at each grid point.
 pub fn absolute_vorticity(
-    u: &[f64], v: &[f64], lats: &[f64],
-    nx: usize, ny: usize, dx: f64, dy: f64,
+    u: &[f64],
+    v: &[f64],
+    lats: &[f64],
+    nx: usize,
+    ny: usize,
+    dx: f64,
+    dy: f64,
 ) -> Vec<f64> {
     let rel = vorticity(u, v, nx, ny, dx, dy);
     assert_eq!(lats.len(), nx * ny);

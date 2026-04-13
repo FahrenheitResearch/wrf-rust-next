@@ -1,8 +1,6 @@
 //! Moisture diagnostic variables:
 //! pw, rh2m, dp2m, mixing_ratio, specific_humidity
 
-
-
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;
@@ -59,12 +57,16 @@ pub fn compute_dp2m(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<
 
 /// Water vapor mixing ratio (kg/kg). `[nz, ny, nx]`
 pub fn compute_mixing_ratio(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.qvapor(t)
+    f.qvapor(t).map(|v| v.to_vec())
 }
 
 /// Specific humidity (kg/kg). `[nz, ny, nx]`
 /// q = qv / (1 + qv)
-pub fn compute_specific_humidity(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
+pub fn compute_specific_humidity(
+    f: &WrfFile,
+    t: usize,
+    _opts: &ComputeOpts,
+) -> WrfResult<Vec<f64>> {
     let qv = f.qvapor(t)?;
     Ok(qv.iter().map(|q| q / (1.0 + q)).collect())
 }

@@ -1,5 +1,3 @@
-
-
 /// Destagger a 3D field along the X (west_east) axis.
 ///
 /// Input shape: `[nz, ny, nx_stag]` where `nx_stag = nx + 1`.
@@ -8,17 +6,15 @@
 pub fn destagger_x(data: &[f64], nz: usize, ny: usize, nx_stag: usize) -> Vec<f64> {
     let nx = nx_stag - 1;
     let mut out = vec![0.0; nz * ny * nx];
-    out.chunks_mut(ny * nx)
-        .enumerate()
-        .for_each(|(k, plane)| {
-            for j in 0..ny {
-                for i in 0..nx {
-                    let idx_l = k * ny * nx_stag + j * nx_stag + i;
-                    let idx_r = idx_l + 1;
-                    plane[j * nx + i] = 0.5 * (data[idx_l] + data[idx_r]);
-                }
+    out.chunks_mut(ny * nx).enumerate().for_each(|(k, plane)| {
+        for j in 0..ny {
+            for i in 0..nx {
+                let idx_l = k * ny * nx_stag + j * nx_stag + i;
+                let idx_r = idx_l + 1;
+                plane[j * nx + i] = 0.5 * (data[idx_l] + data[idx_r]);
             }
-        });
+        }
+    });
     out
 }
 
@@ -29,17 +25,15 @@ pub fn destagger_x(data: &[f64], nz: usize, ny: usize, nx_stag: usize) -> Vec<f6
 pub fn destagger_y(data: &[f64], nz: usize, ny_stag: usize, nx: usize) -> Vec<f64> {
     let ny = ny_stag - 1;
     let mut out = vec![0.0; nz * ny * nx];
-    out.chunks_mut(ny * nx)
-        .enumerate()
-        .for_each(|(k, plane)| {
-            for j in 0..ny {
-                for i in 0..nx {
-                    let idx_b = k * ny_stag * nx + j * nx + i;
-                    let idx_t = idx_b + nx;
-                    plane[j * nx + i] = 0.5 * (data[idx_b] + data[idx_t]);
-                }
+    out.chunks_mut(ny * nx).enumerate().for_each(|(k, plane)| {
+        for j in 0..ny {
+            for i in 0..nx {
+                let idx_b = k * ny_stag * nx + j * nx + i;
+                let idx_t = idx_b + nx;
+                plane[j * nx + i] = 0.5 * (data[idx_b] + data[idx_t]);
             }
-        });
+        }
+    });
     out
 }
 

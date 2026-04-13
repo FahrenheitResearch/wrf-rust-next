@@ -6,11 +6,10 @@
 //! Uses constant intercept parameters (ivarint=0) and bright-band
 //! correction (iliqskin=1), matching the wrf-python defaults.
 
-
-
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;
+use rayon::prelude::*;
 
 // --- Physical constants (wrf_constants) ---
 const GAMMA_SEVEN: f64 = 720.0;
@@ -56,11 +55,15 @@ pub fn compute_dbz(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f
     let qv = f.qvapor(t)?;
 
     // Try to read hydrometeor fields; default to zero if absent
-    let qr = f.read_var("QRAIN", t).unwrap_or_else(|_| vec![0.0; f.nxyz()]);
+    let qr = f
+        .read_var("QRAIN", t)
+        .unwrap_or_else(|_| vec![0.0; f.nxyz()]);
     let have_snow = f.read_var("QSNOW", t);
     let sn0 = have_snow.is_ok();
     let qs = have_snow.unwrap_or_else(|_| vec![0.0; f.nxyz()]);
-    let qg = f.read_var("QGRAUP", t).unwrap_or_else(|_| vec![0.0; f.nxyz()]);
+    let qg = f
+        .read_var("QGRAUP", t)
+        .unwrap_or_else(|_| vec![0.0; f.nxyz()]);
 
     // --- Precompute factors exactly as in CALCDBZ ---
     // factor_r = GAMMA_SEVEN * 1e18 * (1/(PI*RHO_R))^1.75
@@ -84,7 +87,7 @@ pub fn compute_dbz(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f
     let n = f.nxyz();
 
     let dbz: Vec<f64> = (0..n)
-        .into_iter()
+        .into_par_iter()
         .map(|i| {
             let t_k = tk[i];
             let qvp = qv[i].max(0.0);

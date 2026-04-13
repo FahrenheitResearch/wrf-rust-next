@@ -7,10 +7,10 @@
 //!
 //! This module is gated behind the `pure-rust-reader` feature flag.
 
-use std::sync::Mutex;
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom, BufReader};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::Mutex;
 
 use flate2::read::ZlibDecoder;
 
@@ -92,9 +92,15 @@ fn read_u64(r: &Mutex<BufReader<std::fs::File>>, off: u64) -> WrfResult<u64> {
     Ok(u64::from_le_bytes(b.try_into().unwrap()))
 }
 
-fn le_u16(b: &[u8]) -> u16 { u16::from_le_bytes([b[0], b[1]]) }
-fn le_u32(b: &[u8]) -> u32 { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) }
-fn le_u64(b: &[u8]) -> u64 { u64::from_le_bytes(b[0..8].try_into().unwrap()) }
+fn le_u16(b: &[u8]) -> u16 {
+    u16::from_le_bytes([b[0], b[1]])
+}
+fn le_u32(b: &[u8]) -> u32 {
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+}
+fn le_u64(b: &[u8]) -> u64 {
+    u64::from_le_bytes(b[0..8].try_into().unwrap())
+}
 
 // ---------------------------------------------------------------------------
 // Parsed structures
@@ -118,14 +124,26 @@ enum DType {
 
 impl DType {
     fn size(&self) -> usize {
-        match self { DType::F32 => 4, DType::F64 => 8, DType::I32 => 4, DType::U8 => 1 }
+        match self {
+            DType::F32 => 4,
+            DType::F64 => 8,
+            DType::I32 => 4,
+            DType::U8 => 1,
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 enum Layout {
-    Contiguous { addr: u64, size: u64 },
-    Chunked { addr: u64, chunk_dims: Vec<u32>, ndims: u8 },
+    Contiguous {
+        addr: u64,
+        size: u64,
+    },
+    Chunked {
+        addr: u64,
+        chunk_dims: Vec<u32>,
+        ndims: u8,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -258,22 +276,17 @@ impl PureRustFile {
             } else if cache_type == 1 {
                 let bt = read_u64(&reader, pos + 24)?;
                 let lh = read_u64(&reader, pos + 32)?;
-                let datasets = Self::read_group_v0_static(
-                    &reader, bt, lh, base_addr,
-                )?;
-                let global_attrs = Self::read_attributes_v1_ohdr_static(
-                    &reader, root_ohdr_addr, base_addr,
-                )?;
+                let datasets = Self::read_group_v0_static(&reader, bt, lh, base_addr)?;
+                let global_attrs =
+                    Self::read_attributes_v1_ohdr_static(&reader, root_ohdr_addr, base_addr)?;
                 (datasets, global_attrs)
             } else {
                 // cache_type=0 with v1 OHDR: find symbol table in OHDR
-                let (bt, lh) = Self::find_symbol_table_from_ohdr(&reader, root_ohdr_addr, base_addr)?;
-                let datasets = Self::read_group_v0_static(
-                    &reader, bt, lh, base_addr,
-                )?;
-                let global_attrs = Self::read_attributes_v1_ohdr_static(
-                    &reader, root_ohdr_addr, base_addr,
-                )?;
+                let (bt, lh) =
+                    Self::find_symbol_table_from_ohdr(&reader, root_ohdr_addr, base_addr)?;
+                let datasets = Self::read_group_v0_static(&reader, bt, lh, base_addr)?;
+                let global_attrs =
+                    Self::read_attributes_v1_ohdr_static(&reader, root_ohdr_addr, base_addr)?;
                 (datasets, global_attrs)
             };
 
@@ -285,7 +298,9 @@ impl PureRustFile {
                 global_attrs,
             })
         } else {
-            Err(hdf5_err(format!("Unsupported superblock version {version}")))
+            Err(hdf5_err(format!(
+                "Unsupported superblock version {version}"
+            )))
         }
     }
 
@@ -309,9 +324,7 @@ impl PureRustFile {
             }
             Ok(())
         })?;
-        result.ok_or_else(|| hdf5_err(
-            "No symbol table message found in root group object header"
-        ))
+        result.ok_or_else(|| hdf5_err("No symbol table message found in root group object header"))
     }
 
     /// Read the children of a v0/v1 root group using B-tree v1 (type 0)
@@ -452,42 +465,76 @@ impl PureRustFile {
 
     /// Read a global attribute as f32.
     pub fn global_attr_f32(&self, name: &str) -> WrfResult<f32> {
-        let attr = self.global_attrs.get(name)
+        let attr = self
+            .global_attrs
+            .get(name)
             .ok_or_else(|| WrfError::AttrNotFound(name.to_string()))?;
-        if let Some(v) = attr.f32_val { return Ok(v); }
-        if let Some(v) = attr.f64_val { return Ok(v as f32); }
-        if let Some(v) = attr.i32_val { return Ok(v as f32); }
+        if let Some(v) = attr.f32_val {
+            return Ok(v);
+        }
+        if let Some(v) = attr.f64_val {
+            return Ok(v as f32);
+        }
+        if let Some(v) = attr.i32_val {
+            return Ok(v as f32);
+        }
         Err(WrfError::AttrType(format!("'{name}' is not numeric")))
     }
 
     /// Read a global attribute as f64.
     pub fn global_attr_f64(&self, name: &str) -> WrfResult<f64> {
-        let attr = self.global_attrs.get(name)
+        let attr = self
+            .global_attrs
+            .get(name)
             .ok_or_else(|| WrfError::AttrNotFound(name.to_string()))?;
-        if let Some(v) = attr.f64_val { return Ok(v); }
-        if let Some(v) = attr.f32_val { return Ok(v as f64); }
-        if let Some(v) = attr.i32_val { return Ok(v as f64); }
+        if let Some(v) = attr.f64_val {
+            return Ok(v);
+        }
+        if let Some(v) = attr.f32_val {
+            return Ok(v as f64);
+        }
+        if let Some(v) = attr.i32_val {
+            return Ok(v as f64);
+        }
         Err(WrfError::AttrType(format!("'{name}' is not numeric")))
     }
 
     /// Read a global attribute as i32.
     pub fn global_attr_i32(&self, name: &str) -> WrfResult<i32> {
-        let attr = self.global_attrs.get(name)
+        let attr = self
+            .global_attrs
+            .get(name)
             .ok_or_else(|| WrfError::AttrNotFound(name.to_string()))?;
-        if let Some(v) = attr.i32_val { return Ok(v); }
-        if let Some(v) = attr.f32_val { return Ok(v as i32); }
-        if let Some(v) = attr.f64_val { return Ok(v as i32); }
+        if let Some(v) = attr.i32_val {
+            return Ok(v);
+        }
+        if let Some(v) = attr.f32_val {
+            return Ok(v as i32);
+        }
+        if let Some(v) = attr.f64_val {
+            return Ok(v as i32);
+        }
         Err(WrfError::AttrType(format!("'{name}' is not numeric")))
     }
 
     /// Read a global attribute as String.
     pub fn global_attr_string(&self, name: &str) -> WrfResult<String> {
-        let attr = self.global_attrs.get(name)
+        let attr = self
+            .global_attrs
+            .get(name)
             .ok_or_else(|| WrfError::AttrNotFound(name.to_string()))?;
-        if let Some(ref s) = attr.string_val { return Ok(s.clone()); }
-        if let Some(v) = attr.i32_val { return Ok(v.to_string()); }
-        if let Some(v) = attr.f32_val { return Ok(v.to_string()); }
-        Err(WrfError::AttrType(format!("'{name}' cannot be read as string")))
+        if let Some(ref s) = attr.string_val {
+            return Ok(s.clone());
+        }
+        if let Some(v) = attr.i32_val {
+            return Ok(v.to_string());
+        }
+        if let Some(v) = attr.f32_val {
+            return Ok(v.to_string());
+        }
+        Err(WrfError::AttrType(format!(
+            "'{name}' cannot be read as string"
+        )))
     }
 
     // --- Public dataset methods ---
@@ -509,24 +556,19 @@ impl PureRustFile {
         let info = self.get_dataset_info(name)?;
         let raw = self.read_raw_data(name, &info)?;
         let out = match info.dtype {
-            DType::F32 => {
-                raw.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
-                    .collect()
-            }
-            DType::F64 => {
-                raw.chunks_exact(8)
-                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-                    .collect()
-            }
-            DType::I32 => {
-                raw.chunks_exact(4)
-                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f64)
-                    .collect()
-            }
-            DType::U8 => {
-                raw.iter().map(|&b| b as f64).collect()
-            }
+            DType::F32 => raw
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
+                .collect(),
+            DType::F64 => raw
+                .chunks_exact(8)
+                .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                .collect(),
+            DType::I32 => raw
+                .chunks_exact(4)
+                .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f64)
+                .collect(),
+            DType::U8 => raw.iter().map(|&b| b as f64).collect(),
         };
         Ok(out)
     }
@@ -584,10 +626,15 @@ impl PureRustFile {
         if let Some(info) = self.ds_cache.lock().unwrap().get(name).cloned() {
             return Ok(info.clone());
         }
-        let ohdr_addr = *self.datasets.get(name)
+        let ohdr_addr = *self
+            .datasets
+            .get(name)
             .ok_or_else(|| WrfError::VarNotFound(name.to_string()))?;
         let info = self.parse_dataset_ohdr(ohdr_addr)?;
-        self.ds_cache.lock().unwrap().insert(name.to_string(), info.clone());
+        self.ds_cache
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), info.clone());
         Ok(info)
     }
 
@@ -657,8 +704,12 @@ impl PureRustFile {
         }
         let flags = read_u8_at(reader, ohdr_addr + 5)?;
         let mut pos = ohdr_addr + 6;
-        if flags & 0x20 != 0 { pos += 16; } // bit 5: times
-        if flags & 0x10 != 0 { pos += 4; }  // bit 4: phase change
+        if flags & 0x20 != 0 {
+            pos += 16;
+        } // bit 5: times
+        if flags & 0x10 != 0 {
+            pos += 4;
+        } // bit 4: phase change
         let size_of_chunk_size = 1u64 << (flags & 0x03);
         let chunk_size = match size_of_chunk_size {
             1 => read_u8_at(reader, pos)? as u64,
@@ -689,8 +740,12 @@ impl PureRustFile {
                 let ms = read_u16(reader, p + 1)? as u64;
                 let _mf = read_u8_at(reader, p + 3)?;
                 p += msg_hdr;
-                if mt == 0 && ms == 0 { break; }
-                if p + ms > end { break; }
+                if mt == 0 && ms == 0 {
+                    break;
+                }
+                if p + ms > end {
+                    break;
+                }
 
                 match mt {
                     MSG_LINK => {
@@ -702,7 +757,10 @@ impl PureRustFile {
                     MSG_LINK_INFO => {
                         let data = read_bytes(reader, p, ms as usize)?;
                         parse_link_info_message(
-                            &data, link_info_heap, link_info_bt2, link_info_bt2_co,
+                            &data,
+                            link_info_heap,
+                            link_info_bt2,
+                            link_info_bt2_co,
                         );
                     }
                     MSG_CONTINUATION => {
@@ -714,8 +772,14 @@ impl PureRustFile {
                                 let cs = read_bytes(reader, ca, 4)?;
                                 if &cs == b"OCHK" {
                                     parse_msgs(
-                                        reader, ca + 4, ca + cl - 4, msg_hdr,
-                                        links, link_info_heap, link_info_bt2, link_info_bt2_co,
+                                        reader,
+                                        ca + 4,
+                                        ca + cl - 4,
+                                        msg_hdr,
+                                        links,
+                                        link_info_heap,
+                                        link_info_bt2,
+                                        link_info_bt2_co,
                                     )?;
                                 }
                             }
@@ -729,8 +793,14 @@ impl PureRustFile {
         }
 
         parse_msgs(
-            reader, pos, chunk_end, msg_hdr,
-            &mut links, &mut link_info_heap, &mut link_info_bt2, &mut link_info_bt2_co,
+            reader,
+            pos,
+            chunk_end,
+            msg_hdr,
+            &mut links,
+            &mut link_info_heap,
+            &mut link_info_bt2,
+            &mut link_info_bt2_co,
         )?;
 
         // If we have dense link storage, resolve via fractal heap + btree v2
@@ -760,8 +830,12 @@ impl PureRustFile {
         }
         let flags = read_u8_at(reader, ohdr_addr + 5)?;
         let mut pos = ohdr_addr + 6;
-        if flags & 0x20 != 0 { pos += 16; } // bit 5: times
-        if flags & 0x10 != 0 { pos += 4; }  // bit 4: phase change
+        if flags & 0x20 != 0 {
+            pos += 16;
+        } // bit 5: times
+        if flags & 0x10 != 0 {
+            pos += 4;
+        } // bit 4: phase change
         let scs = 1u64 << (flags & 0x03);
         let chunk_size = match scs {
             1 => read_u8_at(reader, pos)? as u64,
@@ -777,7 +851,9 @@ impl PureRustFile {
 
         fn parse_attr_msgs(
             reader: &Mutex<BufReader<std::fs::File>>,
-            start: u64, end: u64, mh: u64,
+            start: u64,
+            end: u64,
+            mh: u64,
             attrs: &mut HashMap<String, HdfAttributeValue>,
             attr_info_heap: &mut Option<u64>,
             attr_info_bt2: &mut Option<u64>,
@@ -788,8 +864,12 @@ impl PureRustFile {
                 let ms = read_u16(reader, p + 1)? as u64;
                 let _mf = read_u8_at(reader, p + 3)?;
                 p += mh;
-                if mt == 0 && ms == 0 { break; }
-                if p + ms > end { break; }
+                if mt == 0 && ms == 0 {
+                    break;
+                }
+                if p + ms > end {
+                    break;
+                }
 
                 match mt {
                     MSG_ATTRIBUTE => {
@@ -811,8 +891,13 @@ impl PureRustFile {
                                 let cs = read_bytes(reader, ca, 4)?;
                                 if &cs == b"OCHK" {
                                     parse_attr_msgs(
-                                        reader, ca + 4, ca + cl - 4, mh,
-                                        attrs, attr_info_heap, attr_info_bt2,
+                                        reader,
+                                        ca + 4,
+                                        ca + cl - 4,
+                                        mh,
+                                        attrs,
+                                        attr_info_heap,
+                                        attr_info_bt2,
                                     )?;
                                 }
                             }
@@ -826,8 +911,13 @@ impl PureRustFile {
         }
 
         parse_attr_msgs(
-            reader, pos, chunk_end, mh,
-            &mut attrs, &mut attr_info_heap, &mut attr_info_bt2,
+            reader,
+            pos,
+            chunk_end,
+            mh,
+            &mut attrs,
+            &mut attr_info_heap,
+            &mut attr_info_bt2,
         )?;
 
         // Dense attribute storage
@@ -851,23 +941,28 @@ impl PureRustFile {
                 }
                 read_bytes(&self.reader, *addr, *size as usize)
             }
-            Layout::Chunked { addr, chunk_dims, ndims } => {
+            Layout::Chunked {
+                addr,
+                chunk_dims,
+                ndims,
+            } => {
                 if *addr == UNDEF_ADDR {
                     return Ok(Vec::new());
                 }
                 self.read_chunked_data(
-                    *addr, &info.shape, chunk_dims, *ndims, &info.dtype, &info.filters,
+                    *addr,
+                    &info.shape,
+                    chunk_dims,
+                    *ndims,
+                    &info.dtype,
+                    &info.filters,
                 )
             }
         }
     }
 
     /// Read only the bytes for a single time-slice (first dimension).
-    fn read_raw_data_slice(
-        &self,
-        info: &DatasetInfo,
-        time_index: usize,
-    ) -> WrfResult<Vec<u8>> {
+    fn read_raw_data_slice(&self, info: &DatasetInfo, time_index: usize) -> WrfResult<Vec<u8>> {
         let elem_size = info.dtype.size();
         let time_stride: usize = info.shape[1..].iter().product();
         let slice_bytes = time_stride * elem_size;
@@ -880,13 +975,22 @@ impl PureRustFile {
                 let offset = *addr + (time_index * slice_bytes) as u64;
                 read_bytes(&self.reader, offset, slice_bytes)
             }
-            Layout::Chunked { addr, chunk_dims, ndims } => {
+            Layout::Chunked {
+                addr,
+                chunk_dims,
+                ndims,
+            } => {
                 if *addr == UNDEF_ADDR {
                     return Ok(Vec::new());
                 }
                 self.read_chunked_data_slice(
-                    *addr, &info.shape, chunk_dims, *ndims,
-                    &info.dtype, &info.filters, time_index,
+                    *addr,
+                    &info.shape,
+                    chunk_dims,
+                    *ndims,
+                    &info.dtype,
+                    &info.filters,
+                    time_index,
                 )
             }
         }
@@ -925,14 +1029,11 @@ impl PureRustFile {
             // Filter: only read chunks whose time range includes time_index
             let ndim = shape.len();
             let chunk_time_start = offsets[0] as usize;
-            if time_index < chunk_time_start
-                || time_index >= chunk_time_start + chunk_time_size
-            {
+            if time_index < chunk_time_start || time_index >= chunk_time_start + chunk_time_size {
                 continue;
             }
 
-            let compressed =
-                read_bytes(&self.reader, *chunk_addr, *compressed_size as usize)?;
+            let compressed = read_bytes(&self.reader, *chunk_addr, *compressed_size as usize)?;
 
             let decompressed = if *filter_mask == 0 && !filters.is_empty() {
                 decompress_chunk(&compressed, filters, chunk_bytes)?
@@ -1002,7 +1103,12 @@ impl PureRustFile {
 
             // Copy element by element along the chunk, handling edge chunks
             copy_chunk_to_output(
-                &decompressed, &mut output, shape, &chunk_shape, &chunk_offsets, elem_size,
+                &decompressed,
+                &mut output,
+                shape,
+                &chunk_shape,
+                &chunk_offsets,
+                elem_size,
             );
         }
 
@@ -1017,7 +1123,9 @@ impl PureRustFile {
     ) -> WrfResult<()> {
         let sig = read_bytes(&self.reader, addr, 4)?;
         if sig != TREE_SIGNATURE {
-            return Err(hdf5_err(format!("Expected TREE at 0x{addr:x}, got {sig:?}")));
+            return Err(hdf5_err(format!(
+                "Expected TREE at 0x{addr:x}, got {sig:?}"
+            )));
         }
 
         let node_type = read_u8_at(&self.reader, addr + 4)?;
@@ -1074,7 +1182,9 @@ fn walk_ohdr_v2_messages_static(
 ) -> WrfResult<()> {
     let sig = read_bytes(reader, addr, 4)?;
     if sig != OHDR_SIGNATURE {
-        return Err(hdf5_err(format!("Expected OHDR at 0x{addr:x}, got {sig:?}")));
+        return Err(hdf5_err(format!(
+            "Expected OHDR at 0x{addr:x}, got {sig:?}"
+        )));
     }
     let version = read_u8_at(reader, addr + 4)?;
     if version != 2 {
@@ -1215,13 +1325,12 @@ fn walk_v1_continuation_block(
 
 /// Read a local heap and return its data segment (the byte buffer containing
 /// null-terminated strings for link names).
-fn read_local_heap(
-    reader: &Mutex<BufReader<std::fs::File>>,
-    addr: u64,
-) -> WrfResult<Vec<u8>> {
+fn read_local_heap(reader: &Mutex<BufReader<std::fs::File>>, addr: u64) -> WrfResult<Vec<u8>> {
     let sig = read_bytes(reader, addr, 4)?;
     if sig != HEAP_SIGNATURE {
-        return Err(hdf5_err(format!("Expected HEAP at 0x{addr:x}, got {sig:?}")));
+        return Err(hdf5_err(format!(
+            "Expected HEAP at 0x{addr:x}, got {sig:?}"
+        )));
     }
     let _version = read_u8_at(reader, addr + 4)?;
     // 3 bytes reserved (5,6,7)
@@ -1242,7 +1351,10 @@ fn read_string_from_heap(heap_data: &[u8], offset: usize) -> String {
         return String::new();
     }
     let remaining = &heap_data[offset..];
-    let end = remaining.iter().position(|&b| b == 0).unwrap_or(remaining.len());
+    let end = remaining
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(remaining.len());
     String::from_utf8_lossy(&remaining[..end]).to_string()
 }
 
@@ -1358,7 +1470,9 @@ fn read_symbol_table_node(
 // ---------------------------------------------------------------------------
 
 fn parse_dataspace(data: &[u8]) -> WrfResult<Vec<usize>> {
-    if data.is_empty() { return Ok(Vec::new()); }
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
     let version = data[0];
     let ndims = data[1] as usize;
     let _flags = data[2];
@@ -1366,7 +1480,9 @@ fn parse_dataspace(data: &[u8]) -> WrfResult<Vec<usize>> {
     let mut dims = Vec::with_capacity(ndims);
     for i in 0..ndims {
         let off = dim_start + i * 8;
-        if off + 8 > data.len() { break; }
+        if off + 8 > data.len() {
+            break;
+        }
         dims.push(le_u64(&data[off..]) as usize);
     }
     Ok(dims)
@@ -1430,10 +1546,16 @@ fn parse_layout(data: &[u8]) -> WrfResult<Layout> {
             let mut chunk_dims = Vec::with_capacity(num_chunk_dims);
             for i in 0..num_chunk_dims {
                 let off = 11 + i * 4;
-                if off + 4 > data.len() { break; }
+                if off + 4 > data.len() {
+                    break;
+                }
                 chunk_dims.push(le_u32(&data[off..]));
             }
-            Ok(Layout::Chunked { addr, chunk_dims, ndims })
+            Ok(Layout::Chunked {
+                addr,
+                chunk_dims,
+                ndims,
+            })
         }
         (4, 1) => {
             // Contiguous, version 4
@@ -1453,7 +1575,9 @@ fn parse_layout(data: &[u8]) -> WrfResult<Layout> {
             let mut chunk_dims = Vec::with_capacity(num_chunk_dims);
             let mut off = 5;
             for _ in 0..num_chunk_dims {
-                if off + 4 > data.len() { break; }
+                if off + 4 > data.len() {
+                    break;
+                }
                 chunk_dims.push(le_u32(&data[off..]));
                 off += 4;
             }
@@ -1466,24 +1590,35 @@ fn parse_layout(data: &[u8]) -> WrfResult<Layout> {
             };
             // Layout v4 chunked uses ndims differently (no +1)
             // Add 1 to ndims for btree key compatibility
-            Ok(Layout::Chunked { addr, chunk_dims, ndims: ndims + 1 })
+            Ok(Layout::Chunked {
+                addr,
+                chunk_dims,
+                ndims: ndims + 1,
+            })
         }
         _ => {
             // Compact (class 0) or unknown
-            Ok(Layout::Contiguous { addr: UNDEF_ADDR, size: 0 })
+            Ok(Layout::Contiguous {
+                addr: UNDEF_ADDR,
+                size: 0,
+            })
         }
     }
 }
 
 fn parse_filters(data: &[u8]) -> WrfResult<Vec<Filter>> {
-    if data.len() < 2 { return Ok(Vec::new()); }
+    if data.len() < 2 {
+        return Ok(Vec::new());
+    }
     let version = data[0];
     let nfilters = data[1] as usize;
     let mut filters = Vec::new();
     let mut pos = if version == 1 { 8 } else { 2 }; // v1 has 6 reserved bytes
 
     for _ in 0..nfilters {
-        if pos + 2 > data.len() { break; }
+        if pos + 2 > data.len() {
+            break;
+        }
         let filter_id = le_u16(&data[pos..]);
         pos += 2;
 
@@ -1503,7 +1638,9 @@ fn parse_filters(data: &[u8]) -> WrfResult<Vec<Filter>> {
             // parameters
             let mut params = Vec::new();
             for _ in 0..nparams {
-                if pos + 4 > data.len() { break; }
+                if pos + 4 > data.len() {
+                    break;
+                }
                 params.push(le_u32(&data[pos..]));
                 pos += 4;
             }
@@ -1529,7 +1666,9 @@ fn parse_filters(data: &[u8]) -> WrfResult<Vec<Filter>> {
             pos += 2;
             let mut params = Vec::new();
             for _ in 0..nparams {
-                if pos + 4 > data.len() { break; }
+                if pos + 4 > data.len() {
+                    break;
+                }
                 params.push(le_u32(&data[pos..]));
                 pos += 4;
             }
@@ -1577,10 +1716,26 @@ fn parse_link_message(data: &[u8]) -> WrfResult<(String, u64)> {
     // Name length: depends on bits 0-1
     let name_len_size = 1 << (flags & 0x03);
     let name_len = match name_len_size {
-        1 => { let v = data[pos] as usize; pos += 1; v }
-        2 => { let v = le_u16(&data[pos..]) as usize; pos += 2; v }
-        4 => { let v = le_u32(&data[pos..]) as usize; pos += 4; v }
-        8 => { let v = le_u64(&data[pos..]) as usize; pos += 8; v }
+        1 => {
+            let v = data[pos] as usize;
+            pos += 1;
+            v
+        }
+        2 => {
+            let v = le_u16(&data[pos..]) as usize;
+            pos += 2;
+            v
+        }
+        4 => {
+            let v = le_u32(&data[pos..]) as usize;
+            pos += 4;
+            v
+        }
+        8 => {
+            let v = le_u64(&data[pos..]) as usize;
+            pos += 8;
+            v
+        }
         _ => return Err(hdf5_err("bad name length size")),
     };
 
@@ -1608,7 +1763,9 @@ fn parse_link_info_message(
     bt2_name: &mut Option<u64>,
     bt2_co: &mut Option<u64>,
 ) {
-    if data.len() < 2 { return; }
+    if data.len() < 2 {
+        return;
+    }
     let _version = data[0];
     let flags = data[1];
     let mut pos = 2;
@@ -1620,26 +1777,30 @@ fn parse_link_info_message(
 
     if pos + 8 <= data.len() {
         let fh_addr = le_u64(&data[pos..]);
-        if fh_addr != UNDEF_ADDR { *heap = Some(fh_addr); }
+        if fh_addr != UNDEF_ADDR {
+            *heap = Some(fh_addr);
+        }
         pos += 8;
     }
     if pos + 8 <= data.len() {
         let bt2_addr = le_u64(&data[pos..]);
-        if bt2_addr != UNDEF_ADDR { *bt2_name = Some(bt2_addr); }
+        if bt2_addr != UNDEF_ADDR {
+            *bt2_name = Some(bt2_addr);
+        }
         pos += 8;
     }
     if flags & 0x01 != 0 && pos + 8 <= data.len() {
         let bt2_co_addr = le_u64(&data[pos..]);
-        if bt2_co_addr != UNDEF_ADDR { *bt2_co = Some(bt2_co_addr); }
+        if bt2_co_addr != UNDEF_ADDR {
+            *bt2_co = Some(bt2_co_addr);
+        }
     }
 }
 
-fn parse_attr_info_message(
-    data: &[u8],
-    heap: &mut Option<u64>,
-    bt2: &mut Option<u64>,
-) {
-    if data.len() < 2 { return; }
+fn parse_attr_info_message(data: &[u8], heap: &mut Option<u64>, bt2: &mut Option<u64>) {
+    if data.len() < 2 {
+        return;
+    }
     let _version = data[0];
     let flags = data[1];
     let mut pos = 2;
@@ -1651,12 +1812,16 @@ fn parse_attr_info_message(
 
     if pos + 8 <= data.len() {
         let fh_addr = le_u64(&data[pos..]);
-        if fh_addr != UNDEF_ADDR { *heap = Some(fh_addr); }
+        if fh_addr != UNDEF_ADDR {
+            *heap = Some(fh_addr);
+        }
         pos += 8;
     }
     if pos + 8 <= data.len() {
         let bt2_addr = le_u64(&data[pos..]);
-        if bt2_addr != UNDEF_ADDR { *bt2 = Some(bt2_addr); }
+        if bt2_addr != UNDEF_ADDR {
+            *bt2 = Some(bt2_addr);
+        }
     }
 }
 
@@ -1683,7 +1848,9 @@ fn parse_attribute_message(data: &[u8]) -> WrfResult<(String, HdfAttributeValue)
         return Err(hdf5_err("Attribute name overflow"));
     }
     let name_bytes = &data[pos..pos + name_size];
-    let name = String::from_utf8_lossy(name_bytes).trim_end_matches('\0').to_string();
+    let name = String::from_utf8_lossy(name_bytes)
+        .trim_end_matches('\0')
+        .to_string();
     pos += name_size;
 
     // v1 pads to 8-byte boundary
@@ -1716,7 +1883,11 @@ fn parse_attribute_message(data: &[u8]) -> WrfResult<(String, HdfAttributeValue)
     }
 
     // Data
-    let total_elems: usize = if dims.is_empty() { 1 } else { dims.iter().product() };
+    let total_elems: usize = if dims.is_empty() {
+        1
+    } else {
+        dims.iter().product()
+    };
     let data_bytes = total_elems * dtype.size();
     let remaining = &data[pos..];
 
@@ -1725,7 +1896,9 @@ fn parse_attribute_message(data: &[u8]) -> WrfResult<(String, HdfAttributeValue)
             if remaining.len() >= 4 {
                 HdfAttributeValue {
                     f32_val: Some(f32::from_le_bytes(remaining[0..4].try_into().unwrap())),
-                    i32_val: None, string_val: None, f64_val: None,
+                    i32_val: None,
+                    string_val: None,
+                    f64_val: None,
                 }
             } else {
                 return Err(hdf5_err("F32 attr data too short"));
@@ -1735,7 +1908,9 @@ fn parse_attribute_message(data: &[u8]) -> WrfResult<(String, HdfAttributeValue)
             if remaining.len() >= 8 {
                 HdfAttributeValue {
                     f64_val: Some(f64::from_le_bytes(remaining[0..8].try_into().unwrap())),
-                    f32_val: None, i32_val: None, string_val: None,
+                    f32_val: None,
+                    i32_val: None,
+                    string_val: None,
                 }
             } else {
                 return Err(hdf5_err("F64 attr data too short"));
@@ -1745,7 +1920,9 @@ fn parse_attribute_message(data: &[u8]) -> WrfResult<(String, HdfAttributeValue)
             if remaining.len() >= 4 {
                 HdfAttributeValue {
                     i32_val: Some(i32::from_le_bytes(remaining[0..4].try_into().unwrap())),
-                    f32_val: None, string_val: None, f64_val: None,
+                    f32_val: None,
+                    string_val: None,
+                    f64_val: None,
                 }
             } else {
                 return Err(hdf5_err("I32 attr data too short"));
@@ -1757,7 +1934,10 @@ fn parse_attribute_message(data: &[u8]) -> WrfResult<(String, HdfAttributeValue)
                 .trim_end_matches('\0')
                 .to_string();
             HdfAttributeValue {
-                string_val: Some(s), f32_val: None, i32_val: None, f64_val: None,
+                string_val: Some(s),
+                f32_val: None,
+                i32_val: None,
+                f64_val: None,
             }
         }
     };
@@ -1908,7 +2088,9 @@ fn parse_fractal_heap_header(
                 starting_row_indirect = r as u32;
                 break;
             }
-            if r > 0 { check_bs *= 2; }
+            if r > 0 {
+                check_bs *= 2;
+            }
         }
         if starting_row_indirect == 0 && starting_block_size <= max_direct_block_size {
             let mut bs2 = starting_block_size;
@@ -1917,7 +2099,9 @@ fn parse_fractal_heap_header(
                     starting_row_indirect = r as u32;
                     break;
                 }
-                if r > 0 { bs2 *= 2; }
+                if r > 0 {
+                    bs2 *= 2;
+                }
             }
             if starting_row_indirect == 0 {
                 starting_row_indirect = max_rows as u32;
@@ -1990,11 +2174,21 @@ fn resolve_managed_object(
 ) -> WrfResult<Vec<u8>> {
     if heap.nrows == 0 {
         read_from_direct_block(
-            reader, heap.root_block_addr, heap, offset, length, heap.starting_block_size,
+            reader,
+            heap.root_block_addr,
+            heap,
+            offset,
+            length,
+            heap.starting_block_size,
         )
     } else {
         read_from_indirect_block(
-            reader, heap.root_block_addr, heap, offset, length, heap.nrows as usize,
+            reader,
+            heap.root_block_addr,
+            heap,
+            offset,
+            length,
+            heap.nrows as usize,
         )
     }
 }
@@ -2013,7 +2207,9 @@ fn read_from_direct_block(
 
     let sig = read_bytes(reader, block_addr, 4)?;
     if sig != FHDB_SIGNATURE {
-        return Err(hdf5_err(format!("Expected FHDB at 0x{block_addr:x}, got {sig:?}")));
+        return Err(hdf5_err(format!(
+            "Expected FHDB at 0x{block_addr:x}, got {sig:?}"
+        )));
     }
 
     read_bytes(reader, block_addr + local_offset, length)
@@ -2036,10 +2232,17 @@ fn read_from_indirect_block(
         // Could be a direct block if nrows is small
         if sig == FHDB_SIGNATURE {
             return read_from_direct_block(
-                reader, block_addr, heap, offset, length, heap.starting_block_size,
+                reader,
+                block_addr,
+                heap,
+                offset,
+                length,
+                heap.starting_block_size,
             );
         }
-        return Err(hdf5_err(format!("Expected FHIB at 0x{block_addr:x}, got {sig:?}")));
+        return Err(hdf5_err(format!(
+            "Expected FHIB at 0x{block_addr:x}, got {sig:?}"
+        )));
     }
 
     // FHIB header: sig(4) + version(1) + heap_header_addr(8) + block_offset(variable)
@@ -2069,20 +2272,26 @@ fn read_from_indirect_block(
 
     // Check direct blocks
     for row in 0..ndirect_rows {
-        let block_size = heap.row_block_sizes.get(row).copied()
+        let block_size = heap
+            .row_block_sizes
+            .get(row)
+            .copied()
             .unwrap_or(heap.starting_block_size);
 
         for _col in 0..heap.table_width {
             let child_addr = read_u64(reader, pos)?;
             pos += entry_size as u64;
 
-            if child_addr != UNDEF_ADDR
-                && offset >= cum_offset
-                && offset < cum_offset + block_size
+            if child_addr != UNDEF_ADDR && offset >= cum_offset && offset < cum_offset + block_size
             {
                 let local_offset = offset - cum_offset;
                 return read_from_direct_block(
-                    reader, child_addr, heap, local_offset, length, block_size,
+                    reader,
+                    child_addr,
+                    heap,
+                    local_offset,
+                    length,
+                    block_size,
                 );
             }
             cum_offset += block_size;
@@ -2104,7 +2313,12 @@ fn read_from_indirect_block(
                 && offset < cum_offset + child_capacity
             {
                 return read_from_indirect_block(
-                    reader, child_addr, heap, offset, length, child_nrows,
+                    reader,
+                    child_addr,
+                    heap,
+                    offset,
+                    length,
+                    child_nrows,
                 );
             }
             cum_offset += child_capacity;
@@ -2120,7 +2334,10 @@ fn indirect_block_capacity(heap: &FractalHeapInfo, nrows: usize) -> u64 {
     let ndirect = nrows.min(heap.starting_row_indirect as usize);
     let mut total: u64 = 0;
     for row in 0..ndirect {
-        let bs = heap.row_block_sizes.get(row).copied()
+        let bs = heap
+            .row_block_sizes
+            .get(row)
+            .copied()
             .unwrap_or(heap.starting_block_size);
         total += bs * heap.table_width as u64;
     }
@@ -2155,8 +2372,14 @@ fn enumerate_btree_v2(
 
     let mut heap_ids = Vec::new();
     enumerate_btree_v2_node(
-        reader, root_node_addr, depth, record_type, record_size,
-        node_size, num_records_root as u32, &mut heap_ids,
+        reader,
+        root_node_addr,
+        depth,
+        record_type,
+        record_size,
+        node_size,
+        num_records_root as u32,
+        &mut heap_ids,
     )?;
 
     Ok(heap_ids)
@@ -2205,7 +2428,9 @@ fn enumerate_btree_v2_node(
         // Internal node (BTIN)
         let sig = read_bytes(reader, addr, 4)?;
         if &sig != b"BTIN" {
-            return Err(hdf5_err(format!("Expected BTIN at 0x{addr:x}, got {sig:?}")));
+            return Err(hdf5_err(format!(
+                "Expected BTIN at 0x{addr:x}, got {sig:?}"
+            )));
         }
 
         let max_leaf_records = (node_size as usize - 10) / record_size as usize;
@@ -2254,8 +2479,14 @@ fn enumerate_btree_v2_node(
         for (child_addr, child_nrec) in children {
             if child_addr != UNDEF_ADDR {
                 enumerate_btree_v2_node(
-                    reader, child_addr, depth - 1, record_type,
-                    record_size, node_size, child_nrec, heap_ids,
+                    reader,
+                    child_addr,
+                    depth - 1,
+                    record_type,
+                    record_size,
+                    node_size,
+                    child_nrec,
+                    heap_ids,
                 )?;
             }
         }
@@ -2325,7 +2556,9 @@ fn copy_chunk_to_output(
     elem_size: usize,
 ) {
     let ndim = shape.len();
-    if ndim == 0 { return; }
+    if ndim == 0 {
+        return;
+    }
 
     // Compute strides for the output array (row-major / C order)
     let mut out_strides = vec![1usize; ndim];
@@ -2366,9 +2599,7 @@ fn copy_chunk_to_output(
         if in_bounds {
             let src_start = i * elem_size;
             let dst_start = out_linear * elem_size;
-            if src_start + elem_size <= chunk_data.len()
-                && dst_start + elem_size <= output.len()
-            {
+            if src_start + elem_size <= chunk_data.len() && dst_start + elem_size <= output.len() {
                 output[dst_start..dst_start + elem_size]
                     .copy_from_slice(&chunk_data[src_start..src_start + elem_size]);
             }
@@ -2390,7 +2621,9 @@ fn copy_chunk_to_output_slice(
     time_index: usize,
 ) {
     let ndim = shape.len();
-    if ndim < 2 { return; }
+    if ndim < 2 {
+        return;
+    }
 
     let spatial_ndim = ndim - 1; // dimensions after time
     let local_time = time_index - chunk_offsets[0];
@@ -2416,8 +2649,7 @@ fn copy_chunk_to_output_slice(
     // Strides for spatial dimensions of the chunk
     let mut spatial_chunk_strides = vec![1usize; spatial_ndim];
     for d in (0..spatial_ndim - 1).rev() {
-        spatial_chunk_strides[d] =
-            spatial_chunk_strides[d + 1] * spatial_chunk_shape[d + 1];
+        spatial_chunk_strides[d] = spatial_chunk_strides[d + 1] * spatial_chunk_shape[d + 1];
     }
 
     for i in 0..spatial_total {
@@ -2445,9 +2677,7 @@ fn copy_chunk_to_output_slice(
             let src_idx = local_time * chunk_strides[0] + i;
             let src_start = src_idx * elem_size;
             let dst_start = out_linear * elem_size;
-            if src_start + elem_size <= chunk_data.len()
-                && dst_start + elem_size <= output.len()
-            {
+            if src_start + elem_size <= chunk_data.len() && dst_start + elem_size <= output.len() {
                 output[dst_start..dst_start + elem_size]
                     .copy_from_slice(&chunk_data[src_start..src_start + elem_size]);
             }
@@ -2466,16 +2696,12 @@ mod tests {
     #[test]
     fn test_unshuffle_roundtrip() {
         let original = vec![
-            0x01, 0x02, 0x03, 0x04,
-            0x11, 0x12, 0x13, 0x14,
-            0x21, 0x22, 0x23, 0x24,
-            0x31, 0x32, 0x33, 0x34,
+            0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13, 0x14, 0x21, 0x22, 0x23, 0x24, 0x31, 0x32,
+            0x33, 0x34,
         ];
         let shuffled = vec![
-            0x01, 0x11, 0x21, 0x31,
-            0x02, 0x12, 0x22, 0x32,
-            0x03, 0x13, 0x23, 0x33,
-            0x04, 0x14, 0x24, 0x34,
+            0x01, 0x11, 0x21, 0x31, 0x02, 0x12, 0x22, 0x32, 0x03, 0x13, 0x23, 0x33, 0x04, 0x14,
+            0x24, 0x34,
         ];
         assert_eq!(unshuffle(&shuffled, 4), original);
     }

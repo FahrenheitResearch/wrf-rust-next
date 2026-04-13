@@ -1,8 +1,6 @@
 //! Thermodynamic diagnostic variables:
 //! temp, tc, theta, theta_e, tv, twb, td, rh
 
-
-
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;
@@ -17,24 +15,26 @@ pub fn compute_t2(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f6
 pub fn compute_tv2m(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let t2 = f.t2_for_opts(t, opts)?;
     let q2 = f.q2_for_opts(t, opts)?;
-    Ok(t2.iter().zip(q2.iter())
+    Ok(t2
+        .iter()
+        .zip(q2.iter())
         .map(|(tk, q)| tk * (1.0 + 0.61 * q.max(0.0)))
         .collect())
 }
 
 /// Temperature (K). `[nz, ny, nx]`
 pub fn compute_temp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.temperature(t)
+    f.temperature(t).map(|v| v.to_vec())
 }
 
 /// Temperature (°C). `[nz, ny, nx]`
 pub fn compute_tc(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.temperature_c(t)
+    f.temperature_c(t).map(|v| v.to_vec())
 }
 
 /// Potential temperature (K). `[nz, ny, nx]`
 pub fn compute_theta(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.full_theta(t)
+    f.full_theta(t).map(|v| v.to_vec())
 }
 
 /// Equivalent potential temperature (K). `[nz, ny, nx]`
@@ -49,10 +49,7 @@ pub fn compute_theta_e(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
         .zip(tc.iter())
         .zip(qv.iter())
         .map(|((p, t_c), q)| {
-            let td_c = crate::met::thermo::dewpoint_from_rh(
-                *t_c,
-                rh_from_q(*q, *p, *t_c),
-            );
+            let td_c = crate::met::thermo::dewpoint_from_rh(*t_c, rh_from_q(*q, *p, *t_c));
             crate::met::thermo::equivalent_potential_temperature(*p, *t_c, td_c) + 273.15
         })
         .collect();

@@ -442,11 +442,7 @@ def getvar(
         return _get_times_result([wf], resolved_timeidx)
 
     if resolved_timeidx is ALL_TIMES:
-        arrays = []
-        for t in range(wf.nt):
-            arr = wf._inner.getvar(name, timeidx=t, **kwargs)
-            arrays.append(arr)
-        result = np.stack(arrays, axis=0)
+        result = wf._inner.getvar_all_times(name, **kwargs)
         if squeeze and result.shape[0] == 1:
             result = result[0]
         return result

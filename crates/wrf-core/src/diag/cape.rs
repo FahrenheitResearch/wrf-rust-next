@@ -3,7 +3,7 @@
 //! Uses crate::met::composite::compute_cape_cin() for parallel grid computation
 //! and crate::met::thermo::cape_cin_core() for column-by-column fallback.
 
-
+use rayon::prelude::*;
 
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
@@ -25,11 +25,11 @@ fn compute_cape_fields(
     let psfc = f.psfc(t)?;
     let t2 = match lake_interp {
         Some(a) if a > 0.0 => f.t2_lake_corrected(t, a)?,
-        _ => f.t2(t)?,
+        _ => f.t2(t)?.to_vec(),
     };
     let q2 = match lake_interp {
         Some(a) if a > 0.0 => f.q2_lake_corrected(t, a)?,
-        _ => f.q2(t)?,
+        _ => f.q2(t)?.to_vec(),
     };
 
     let nx = f.nx;
@@ -42,8 +42,17 @@ fn compute_cape_fields(
     // Use crate::met's grid-parallel CAPE computation if no top_m specified
     if top_m.is_none() {
         let (cape, cin, lcl, lfc) = crate::met::composite::compute_cape_cin(
-            &pres, &tc, &qv, &h_agl, &psfc, &t2, &q2,
-            nx, ny, nz, parcel_type,
+            &pres,
+            &tc,
+            &qv,
+            &h_agl,
+            &psfc,
+            &t2,
+            &q2,
+            nx,
+            ny,
+            nz,
+            parcel_type,
         );
         return Ok((cape, cin, lcl, lfc));
     }
@@ -71,23 +80,31 @@ fn compute_cape_fields(
             for k in 0..nz {
                 let idx = k * nxy + ij;
                 let p_hpa = pres[idx] / 100.0;
-                p_prof.push(p_hpa);           // hPa
-                t_prof.push(tc[idx]);          // Celsius
-                // Compute Td from q and p
+                p_prof.push(p_hpa); // hPa
+                t_prof.push(tc[idx]); // Celsius
+                                      // Compute Td from q and p
                 let q = qv[idx].max(1e-10);
                 let e = q * p_hpa / (0.622 + q);
                 let ln_e = (e / 6.112).max(1e-10).ln();
                 let td = (243.5 * ln_e) / (17.67 - ln_e);
-                td_prof.push(td);              // Celsius
-                h_prof.push(h_agl[idx]);       // m AGL
+                td_prof.push(td); // Celsius
+                h_prof.push(h_agl[idx]); // m AGL
             }
 
             // Pass hPa/C -- consistent units so auto-detect doesn't double-convert
             let (psfc_hpa, t2_c, td2_c) = surface_parcel_from_2m(psfc[ij], t2[ij], q2[ij]);
             let (c, ci, l, lf) = crate::met::thermo::cape_cin_core(
-                &p_prof, &t_prof, &td_prof, &h_prof,
-                psfc_hpa, t2_c, td2_c,
-                parcel_type, 100.0, 300.0, top_m,
+                &p_prof,
+                &t_prof,
+                &td_prof,
+                &h_prof,
+                psfc_hpa,
+                t2_c,
+                td2_c,
+                parcel_type,
+                100.0,
+                300.0,
+                top_m,
             );
 
             *cape_v = c;
@@ -100,14 +117,134 @@ fn compute_cape_fields(
 }
 
 fn resolve_parcel_type(opts: &ComputeOpts, default: &str) -> String {
-    opts.parcel_type.as_deref().unwrap_or(default).to_lowercase()
+    opts.parcel_type
+        .as_deref()
+        .unwrap_or(default)
+        .to_lowercase()
 }
 
-fn surface_parcel_from_2m(psfc_pa: f64, t2_k: f64, q2_kgkg: f64) -> (f64, f64, f64) {
+pub(crate) fn surface_parcel_from_2m(psfc_pa: f64, t2_k: f64, q2_kgkg: f64) -> (f64, f64, f64) {
     let psfc_hpa = psfc_pa / 100.0;
     let t2_c = t2_k - 273.15;
     let td2_c = crate::met::composite::dewpoint_from_q(q2_kgkg, psfc_hpa).min(t2_c);
     (psfc_hpa, t2_c, td2_c)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EffectiveLayerColumn {
+    pub base_idx: usize,
+    pub base_h: f64,
+    pub top_h: f64,
+    pub mu_cape: f64,
+    pub mu_el_h: Option<f64>,
+}
+
+pub(crate) fn build_surface_augmented_thermo_column(
+    pres_hpa: &[f64],
+    tc: &[f64],
+    qv: &[f64],
+    h_agl: &[f64],
+    psfc_pa: f64,
+    t2_k: f64,
+    q2_kgkg: f64,
+    nz: usize,
+    nxy: usize,
+    ij: usize,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    let (psfc_hpa, t2_c, td2_c) = surface_parcel_from_2m(psfc_pa, t2_k, q2_kgkg);
+    let mut p_prof = Vec::with_capacity(nz + 1);
+    let mut t_prof = Vec::with_capacity(nz + 1);
+    let mut td_prof = Vec::with_capacity(nz + 1);
+    let mut h_prof = Vec::with_capacity(nz + 1);
+
+    p_prof.push(psfc_hpa);
+    t_prof.push(t2_c);
+    td_prof.push(td2_c);
+    h_prof.push(0.0);
+
+    for k in 0..nz {
+        let idx = k * nxy + ij;
+        p_prof.push(pres_hpa[idx]);
+        t_prof.push(tc[idx]);
+        td_prof.push(crate::met::composite::dewpoint_from_q(qv[idx], pres_hpa[idx]).min(tc[idx]));
+        h_prof.push(h_agl[idx]);
+    }
+
+    (p_prof, t_prof, td_prof, h_prof)
+}
+
+pub(crate) fn find_effective_inflow_layer(
+    p_prof: &[f64],
+    t_prof: &[f64],
+    td_prof: &[f64],
+    h_prof: &[f64],
+) -> Option<EffectiveLayerColumn> {
+    let mut eff_base: Option<usize> = None;
+    let mut eff_top: Option<usize> = None;
+    let mut mu_cape = 0.0f64;
+    let mut mu_idx: Option<usize> = None;
+
+    for k in 0..p_prof.len() {
+        if p_prof.len() - k < 2 {
+            break;
+        }
+
+        let (cape_k, cin_k, _, _) = crate::met::thermo::cape_cin_core(
+            &p_prof[k..],
+            &t_prof[k..],
+            &td_prof[k..],
+            &h_prof[k..],
+            p_prof[k],
+            t_prof[k],
+            td_prof[k],
+            "sb",
+            100.0,
+            300.0,
+            None,
+        );
+
+        if cape_k >= 100.0 && cin_k >= -250.0 {
+            if eff_base.is_none() {
+                eff_base = Some(k);
+            }
+            eff_top = Some(k);
+            if cape_k > mu_cape {
+                mu_cape = cape_k;
+                mu_idx = Some(k);
+            }
+        } else if eff_base.is_some() {
+            break;
+        }
+    }
+
+    let (base_idx, top_idx, mu_idx) = match (eff_base, eff_top, mu_idx) {
+        (Some(base_idx), Some(top_idx), Some(mu_idx)) => (base_idx, top_idx, mu_idx),
+        _ => return None,
+    };
+
+    let mu_el_h = if p_prof.len() - mu_idx >= 2 {
+        crate::met::thermo::el(&p_prof[mu_idx..], &t_prof[mu_idx..], &td_prof[mu_idx..]).and_then(
+            |(el_pres, _)| {
+                if el_pres > 0.0 {
+                    Some(crate::met::thermo::get_height_at_pres(
+                        el_pres, p_prof, h_prof,
+                    ))
+                } else {
+                    None
+                }
+            },
+        )
+    } else {
+        None
+    };
+
+    Some(EffectiveLayerColumn {
+        base_idx,
+        base_h: h_prof[base_idx],
+        top_h: h_prof[top_idx],
+        mu_cape,
+        mu_el_h,
+    })
 }
 
 // ── Public compute functions ──
@@ -279,9 +416,8 @@ pub fn compute_cape3d(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<V
 
             if p_prof.len() >= 2 {
                 let (c, _, _, _) = crate::met::thermo::cape_cin_core(
-                    &p_prof, &t_prof, &td_prof, &h_prof,
-                    p_prof[0], t_prof[0], td_prof[0],
-                    "sb", 100.0, 300.0, None,
+                    &p_prof, &t_prof, &td_prof, &h_prof, p_prof[0], t_prof[0], td_prof[0], "sb",
+                    100.0, 300.0, None,
                 );
                 plane[ij] = c;
             }
@@ -363,9 +499,17 @@ fn compute_cape_fields_custom(
 
             // Use "sb" parcel type with the custom parcel as the surface
             let (c, ci, l, lf) = crate::met::thermo::cape_cin_core(
-                &filt_p, &filt_t, &filt_td, &filt_h,
-                parcel_p_hpa, parcel_t_c, parcel_td_c,
-                "sb", 100.0, 300.0, top_m,
+                &filt_p,
+                &filt_t,
+                &filt_td,
+                &filt_h,
+                parcel_p_hpa,
+                parcel_t_c,
+                parcel_td_c,
+                "sb",
+                100.0,
+                300.0,
+                top_m,
             );
 
             *cape_v = c;
@@ -513,8 +657,7 @@ pub fn compute_el_generic(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
 /// Effective inflow base: lowest model level where a parcel lifted from that level
 /// produces CAPE >= 100 J/kg AND CIN >= -250 J/kg.
 ///
-/// Effective inflow top: equilibrium level of the most-unstable parcel within the
-/// effective layer (approximated as the highest level still meeting the CAPE/CIN criteria).
+/// Effective inflow top: highest contiguous level still meeting the CAPE/CIN criteria.
 pub fn compute_effective_inflow_layer(
     f: &WrfFile,
     t: usize,
@@ -524,95 +667,33 @@ pub fn compute_effective_inflow_layer(
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
+    let psfc = f.psfc(t)?;
+    let t2 = f.t2_for_opts(t, _opts)?;
+    let q2 = f.q2_for_opts(t, _opts)?;
 
     let nx = f.nx;
     let ny = f.ny;
     let nz = f.nz;
     let nxy = nx * ny;
-
-    // Output as two contiguous planes: [base_plane..., top_plane...]
-    let mut base_plane = vec![0.0f64; nxy];
-    let mut top_plane = vec![0.0f64; nxy];
-
-    base_plane.iter_mut()
-        .zip(top_plane.iter_mut())
-        .enumerate()
-        .for_each(|(ij, (base_out, top_out))| {
-        // Extract column profiles
-        let mut p_prof = Vec::with_capacity(nz);
-        let mut t_prof = Vec::with_capacity(nz);
-        let mut td_prof = Vec::with_capacity(nz);
-        let mut h_prof = Vec::with_capacity(nz);
-
-        for k in 0..nz {
-            let idx = k * nxy + ij;
-            p_prof.push(pres_hpa[idx]);
-            t_prof.push(tc[idx]);
-            let q = qv[idx].max(1e-10);
-            let e = q * pres_hpa[idx] / (0.622 + q);
-            let ln_e = (e / 6.112).max(1e-10).ln();
-            td_prof.push((243.5 * ln_e) / (17.67 - ln_e));
-            h_prof.push(h_agl[idx]);
-        }
-
-        let mut eff_base: Option<usize> = None;
-        let mut eff_top: Option<usize> = None;
-        let mut mu_cape = 0.0f64;
-        let mut mu_level: Option<usize> = None;
-
-        // Scan upward from surface
-        for k in 0..nz {
-            if p_prof.len() - k < 2 {
-                break;
-            }
-
-            // Lift parcel from level k
-            let (c, ci, _, _) = crate::met::thermo::cape_cin_core(
-                &p_prof[k..], &t_prof[k..], &td_prof[k..], &h_prof[k..],
-                p_prof[k], t_prof[k], td_prof[k],
-                "sb", 100.0, 300.0, None,
+    let layers: Vec<(f64, f64)> = (0..nxy)
+        .into_par_iter()
+        .map(|ij| {
+            let (p_prof, t_prof, td_prof, h_prof) = build_surface_augmented_thermo_column(
+                &pres_hpa, &tc, &qv, &h_agl, psfc[ij], t2[ij], q2[ij], nz, nxy, ij,
             );
 
-            if c >= 100.0 && ci >= -250.0 {
-                if eff_base.is_none() {
-                    eff_base = Some(k);
-                }
-                eff_top = Some(k);
+            find_effective_inflow_layer(&p_prof, &t_prof, &td_prof, &h_prof)
+                .map(|layer| (layer.base_h, layer.top_h))
+                .unwrap_or((0.0, 0.0))
+        })
+        .collect();
 
-                if c > mu_cape {
-                    mu_cape = c;
-                    mu_level = Some(k);
-                }
-            } else if eff_base.is_some() {
-                // Once we leave the effective layer, stop scanning
-                break;
-            }
-        }
-
-        if let (Some(base_k), Some(_top_k)) = (eff_base, eff_top) {
-            *base_out = h_prof[base_k]; // effective inflow base height AGL
-
-            // Effective inflow top = EL of the most-unstable parcel in the layer
-            if let Some(mu_k) = mu_level {
-                let mu_p_prof = &p_prof[mu_k..];
-                let mu_t_prof = &t_prof[mu_k..];
-                let mu_td_prof = &td_prof[mu_k..];
-                let _mu_h_prof = &h_prof[mu_k..];
-
-                if let Some((el_pres, _)) =
-                    crate::met::thermo::el(mu_p_prof, mu_t_prof, mu_td_prof)
-                {
-                    if el_pres > 0.0 {
-                        *top_out = crate::met::thermo::get_height_at_pres(
-                            el_pres, &p_prof, &h_prof,
-                        );
-                    }
-                }
-                // If el() returned None, top stays 0.0
-            }
-        }
-        // If no effective layer found, both base and top remain 0.0
-    });
+    let mut base_plane = Vec::with_capacity(nxy);
+    let mut top_plane = Vec::with_capacity(nxy);
+    for (base_h, top_h) in layers {
+        base_plane.push(base_h);
+        top_plane.push(top_h);
+    }
 
     // Concatenate: base plane then top plane
     let mut result = base_plane;
@@ -636,59 +717,25 @@ pub fn compute_effective_inflow_cape(
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
     let h_agl = f.height_agl(t)?;
+    let psfc = f.psfc(t)?;
+    let t2 = f.t2_for_opts(t, _opts)?;
+    let q2 = f.q2_for_opts(t, _opts)?;
 
     let nx = f.nx;
     let ny = f.ny;
     let nz = f.nz;
     let nxy = nx * ny;
-
-    let mut result = vec![0.0f64; nxy];
-
-    result.iter_mut().enumerate().for_each(|(ij, out)| {
-        let mut p_prof = Vec::with_capacity(nz);
-        let mut t_prof = Vec::with_capacity(nz);
-        let mut td_prof = Vec::with_capacity(nz);
-        let mut h_prof = Vec::with_capacity(nz);
-
-        for k in 0..nz {
-            let idx = k * nxy + ij;
-            p_prof.push(pres_hpa[idx]);
-            t_prof.push(tc[idx]);
-            let q = qv[idx].max(1e-10);
-            let e = q * pres_hpa[idx] / (0.622 + q);
-            let ln_e = (e / 6.112).max(1e-10).ln();
-            td_prof.push((243.5 * ln_e) / (17.67 - ln_e));
-            h_prof.push(h_agl[idx]);
-        }
-
-        let mut found_base = false;
-        let mut mu_cape = 0.0f64;
-
-        for k in 0..nz {
-            if p_prof.len() - k < 2 {
-                break;
-            }
-
-            let (c, ci, _, _) = crate::met::thermo::cape_cin_core(
-                &p_prof[k..], &t_prof[k..], &td_prof[k..], &h_prof[k..],
-                p_prof[k], t_prof[k], td_prof[k],
-                "sb", 100.0, 300.0, None,
+    Ok((0..nxy)
+        .into_par_iter()
+        .map(|ij| {
+            let (p_prof, t_prof, td_prof, h_prof) = build_surface_augmented_thermo_column(
+                &pres_hpa, &tc, &qv, &h_agl, psfc[ij], t2[ij], q2[ij], nz, nxy, ij,
             );
-
-            if c >= 100.0 && ci >= -250.0 {
-                found_base = true;
-                if c > mu_cape {
-                    mu_cape = c;
-                }
-            } else if found_base {
-                break;
-            }
-        }
-
-        *out = mu_cape;
-    });
-
-    Ok(result)
+            find_effective_inflow_layer(&p_prof, &t_prof, &td_prof, &h_prof)
+                .map(|layer| layer.mu_cape)
+                .unwrap_or(0.0)
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -745,5 +792,57 @@ mod tests {
             cape_moist > cape_dry + 1.0,
             "expected truncated CAPE to respond to 2m moisture, got dry={cape_dry} moist={cape_moist}"
         );
+    }
+
+    #[test]
+    fn effective_inflow_returns_layer_top_not_mu_parcel_el() {
+        let p_prof = [
+            1000.0, 975.0, 950.0, 925.0, 900.0, 850.0, 800.0, 750.0, 700.0, 650.0, 600.0, 550.0,
+            500.0,
+        ];
+        let t_prof = [
+            29.0, 27.5, 26.0, 24.0, 22.0, 18.0, 14.0, 10.0, 6.0, 1.0, -5.0, -12.0, -20.0,
+        ];
+        let td_prof = [
+            23.0, 22.0, 20.0, 17.0, 14.0, 8.0, 3.0, -2.0, -8.0, -15.0, -24.0, -34.0, -45.0,
+        ];
+        let h_prof = [
+            0.0, 200.0, 450.0, 750.0, 1050.0, 1550.0, 2150.0, 2900.0, 3800.0, 4900.0, 6200.0,
+            7800.0, 9600.0,
+        ];
+
+        let layer = find_effective_inflow_layer(&p_prof, &t_prof, &td_prof, &h_prof)
+            .expect("effective layer");
+
+        let mut expected_top_idx = None;
+        for k in 0..p_prof.len() {
+            if p_prof.len() - k < 2 {
+                break;
+            }
+            let (cape_k, cin_k, _, _) = crate::met::thermo::cape_cin_core(
+                &p_prof[k..],
+                &t_prof[k..],
+                &td_prof[k..],
+                &h_prof[k..],
+                p_prof[k],
+                t_prof[k],
+                td_prof[k],
+                "sb",
+                100.0,
+                300.0,
+                None,
+            );
+            if cape_k >= 100.0 && cin_k >= -250.0 {
+                expected_top_idx = Some(k);
+            } else if expected_top_idx.is_some() {
+                break;
+            }
+        }
+        let expected_top_idx = expected_top_idx.expect("qualifying effective layer");
+
+        assert_eq!(layer.base_idx, 0);
+        assert!(layer.top_h > layer.base_h);
+        assert!(expected_top_idx < h_prof.len() - 1);
+        assert_eq!(layer.top_h, h_prof[expected_top_idx]);
     }
 }

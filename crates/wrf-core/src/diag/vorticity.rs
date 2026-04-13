@@ -1,7 +1,5 @@
 //! Vorticity diagnostic variables: avo, pvo
 
-
-
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;

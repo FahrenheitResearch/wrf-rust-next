@@ -13,3 +13,4 @@ pure-rust-reader = ["dep:flate2"]
 netcdf = { version = "0.12", optional = true }
 ndarray = "0.16"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+rayon = "1.10"

@@ -1,8 +1,6 @@
 //! Pressure, height, and geopotential diagnostic variables:
 //! pressure, height, height_agl, zstag, geopt, geopt_stag, terrain, slp, omega
 
-
-
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;
@@ -20,22 +18,22 @@ const TC: f64 = 273.16 + 17.5; // ~290.66 K, temperature threshold for capping
 
 /// Full pressure (Pa). `[nz, ny, nx]`
 pub fn compute_pressure(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.full_pressure(t)
+    f.full_pressure(t).map(|v| v.to_vec())
 }
 
 /// Full pressure (hPa). `[nz, ny, nx]`
 pub fn compute_pressure_hpa(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.pressure_hpa(t)
+    f.pressure_hpa(t).map(|v| v.to_vec())
 }
 
 /// Height MSL (m). `[nz, ny, nx]`
 pub fn compute_height(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.height_msl(t)
+    f.height_msl(t).map(|v| v.to_vec())
 }
 
 /// Height AGL (m). `[nz, ny, nx]`
 pub fn compute_height_agl(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.height_agl(t)
+    f.height_agl(t).map(|v| v.to_vec())
 }
 
 /// Height on staggered Z levels (m). `[nz_stag, ny, nx]`
@@ -46,17 +44,17 @@ pub fn compute_zstag(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Ve
 
 /// Full geopotential (m^2/s^2), destaggered. `[nz, ny, nx]`
 pub fn compute_geopt(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.full_geopotential(t)
+    f.full_geopotential(t).map(|v| v.to_vec())
 }
 
 /// Geopotential on staggered Z levels. `[nz_stag, ny, nx]`
 pub fn compute_geopt_stag(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.geopotential_stag(t)
+    f.geopotential_stag(t).map(|v| v.to_vec())
 }
 
 /// Terrain height (m). `[ny, nx]`
 pub fn compute_terrain(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.terrain(t)
+    f.terrain(t).map(|v| v.to_vec())
 }
 
 /// Sea-level pressure (hPa). `[ny, nx]`
@@ -142,9 +140,7 @@ pub fn compute_slp(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 
         // Step 5: Reduce to sea level using mean of t_sea_level and t_surf
         let z_sfc = z[ij]; // height of lowest model level
-        *slp_val = 0.01
-            * (p_sfc
-                * (2.0 * G_SLP * z_sfc / (RD_SLP * (t_sea_level + t_surf))).exp());
+        *slp_val = 0.01 * (p_sfc * (2.0 * G_SLP * z_sfc / (RD_SLP * (t_sea_level + t_surf))).exp());
     });
 
     Ok(slp)

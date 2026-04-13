@@ -1,39 +1,43 @@
 //! Wind diagnostic variables:
 //! ua, va, wa, wspd, wdir, uvmet, uvmet10, wspd10, wdir10
 
-
-
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;
 
 /// U-wind destaggered (m/s). `[nz, ny, nx]`
 pub fn compute_ua(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.u_destag(t)
+    f.u_destag(t).map(|v| v.to_vec())
 }
 
 /// V-wind destaggered (m/s). `[nz, ny, nx]`
 pub fn compute_va(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.v_destag(t)
+    f.v_destag(t).map(|v| v.to_vec())
 }
 
 /// W-wind destaggered (m/s). `[nz, ny, nx]`
 pub fn compute_wa(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.w_destag(t)
+    f.w_destag(t).map(|v| v.to_vec())
 }
 
 /// Latitude (degrees). `[ny, nx]`
 pub fn compute_lat(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.xlat(t)
+    f.xlat(t).map(|v| v.to_vec())
 }
 
 /// Longitude (degrees). `[ny, nx]`
 pub fn compute_lon(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
-    f.xlong(t)
+    f.xlong(t).map(|v| v.to_vec())
 }
 
 /// Rotate grid-relative (u, v) to earth-relative using SINALPHA/COSALPHA.
-fn rotate_to_earth(u: &[f64], v: &[f64], sina: &[f64], cosa: &[f64], nxy: usize) -> (Vec<f64>, Vec<f64>) {
+fn rotate_to_earth(
+    u: &[f64],
+    v: &[f64],
+    sina: &[f64],
+    cosa: &[f64],
+    nxy: usize,
+) -> (Vec<f64>, Vec<f64>) {
     let mut u_earth = vec![0.0; u.len()];
     let mut v_earth = vec![0.0; v.len()];
 
@@ -77,7 +81,13 @@ pub fn compute_wdir(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec
         .zip(ve.iter())
         .map(|(u, v)| {
             let dir = 270.0 - v.atan2(*u).to_degrees();
-            if dir < 0.0 { dir + 360.0 } else if dir >= 360.0 { dir - 360.0 } else { dir }
+            if dir < 0.0 {
+                dir + 360.0
+            } else if dir >= 360.0 {
+                dir - 360.0
+            } else {
+                dir
+            }
         })
         .collect())
 }
@@ -134,7 +144,13 @@ pub fn compute_wdir10(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<V
         .zip(ve.iter())
         .map(|(u, v)| {
             let dir = 270.0 - v.atan2(*u).to_degrees();
-            if dir < 0.0 { dir + 360.0 } else if dir >= 360.0 { dir - 360.0 } else { dir }
+            if dir < 0.0 {
+                dir + 360.0
+            } else if dir >= 360.0 {
+                dir - 360.0
+            } else {
+                dir
+            }
         })
         .collect())
 }

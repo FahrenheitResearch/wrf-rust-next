@@ -297,8 +297,9 @@ pub fn mean_wind_npw(
 /// Bunkers storm motion estimate using the internal dynamics (ID) method.
 ///
 /// Computes right-moving, left-moving, and mean-wind vectors for a supercell
-/// storm motion estimate. Uses the 0-6 km mean wind, 0-6 km bulk shear, and
-/// a 7.5 m/s perpendicular deviation.
+/// storm motion estimate. Uses the 0-6 km non-pressure-weighted mean wind and
+/// the canonical low/high-layer shear vector between the 0-0.5 km and 5.5-6 km
+/// mean winds.
 ///
 /// # Arguments
 /// * `u_prof`, `v_prof` -- wind components (m/s), ascending height
@@ -317,11 +318,12 @@ pub fn bunkers_storm_motion(
 ) -> ((f64, f64), (f64, f64), (f64, f64)) {
     let deviation = 7.5; // m/s perpendicular offset
 
-    // 0-6 km mean wind -- non-pressure-weighted arithmetic mean (SHARPpy convention)
     let (mw_u, mw_v) = mean_wind_npw(u_prof, v_prof, height_prof, 0.0, 6000.0);
+    let (low_u, low_v) = mean_wind_npw(u_prof, v_prof, height_prof, 0.0, 500.0);
+    let (high_u, high_v) = mean_wind_npw(u_prof, v_prof, height_prof, 5500.0, 6000.0);
 
-    // 0-6 km bulk shear vector
-    let (shr_u, shr_v) = bulk_shear(u_prof, v_prof, height_prof, 0.0, 6000.0);
+    let shr_u = high_u - low_u;
+    let shr_v = high_v - low_v;
 
     // Normalize the shear vector, then get the perpendicular
     let shear_mag = (shr_u * shr_u + shr_v * shr_v).sqrt();
@@ -394,4 +396,61 @@ pub fn critical_angle(
     let cos_angle = (inflow_u * shear_u + inflow_v * shear_v) / (mag_inflow * mag_shear);
     // Clamp to [-1, 1] to avoid NaN from floating-point rounding
     cos_angle.clamp(-1.0, 1.0).acos() * (180.0 / PI)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1.0e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn bunkers_matches_documented_layer_mean_sounding() {
+        // Based on the classic MetPy/operational-style Bunkers example profile.
+        let heights_m = [250.0, 700.0, 1500.0, 3100.0, 5720.0, 7120.0];
+        let u_prof = [
+            -0.6657395241936066,
+            -9.450182969108416e-16,
+            1.7866452622337277,
+            7.716660000000002,
+            16.5339114538791,
+            29.005153836455154,
+        ];
+        let v_prof = [
+            2.4845737288972667,
+            7.71666,
+            10.132568793812247,
+            13.365647184734451,
+            19.70434837479498,
+            10.557012636781815,
+        ];
+
+        let ((rm_u, rm_v), (lm_u, lm_v), (mean_u, mean_v)) =
+            bunkers_storm_motion(&u_prof, &v_prof, &heights_m);
+
+        assert_close(mean_u, 7.399939520385588);
+        assert_close(mean_v, 11.879779884905217);
+        assert_close(rm_u, 12.003125863547057);
+        assert_close(rm_v, 5.958574307479979);
+        assert_close(lm_u, 2.7967531772241188);
+        assert_close(lm_v, 17.800985462330456);
+    }
+
+    #[test]
+    fn mean_wind_npw_includes_interpolated_top_endpoint() {
+        let heights_m = [0.0, 3000.0, 9000.0];
+        let u_prof = [0.0, 6.0, 18.0];
+        let v_prof = [0.0, 0.0, 0.0];
+
+        let (mean_u, mean_v) = mean_wind_npw(&u_prof, &v_prof, &heights_m, 0.0, 6000.0);
+
+        // Surface + interior 3 km level + interpolated 6 km endpoint (12 m/s)
+        assert_close(mean_u, 6.0);
+        assert_close(mean_v, 0.0);
+    }
 }

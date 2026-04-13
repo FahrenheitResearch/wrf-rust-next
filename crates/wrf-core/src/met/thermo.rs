@@ -5,18 +5,18 @@
 /// Vendored from wx-math crate for self-contained builds.
 
 // --- Physical Constants ---
-pub const RD: f64 = 287.058;       // Dry air gas constant (J/(kg*K))
-pub const RV: f64 = 461.5;         // Water vapor gas constant (J/(kg*K))
-pub const CP: f64 = 1005.7;        // Specific heat at constant pressure (J/(kg*K))
-pub const G: f64 = 9.80665;        // Gravitational acceleration (m/s^2)
-pub const ROCP: f64 = 0.28571426;  // Rd/Cp
-pub const ZEROCNK: f64 = 273.15;   // 0 Celsius in Kelvin
+pub const RD: f64 = 287.058; // Dry air gas constant (J/(kg*K))
+pub const RV: f64 = 461.5; // Water vapor gas constant (J/(kg*K))
+pub const CP: f64 = 1005.7; // Specific heat at constant pressure (J/(kg*K))
+pub const G: f64 = 9.80665; // Gravitational acceleration (m/s^2)
+pub const ROCP: f64 = 0.28571426; // Rd/Cp
+pub const ZEROCNK: f64 = 273.15; // 0 Celsius in Kelvin
 pub const MISSING: f64 = -9999.0;
-pub const EPS: f64 = 0.62197;      // Rd/Rv = Mw/Md (ratio of molecular weights)
-pub const LV: f64 = 2.501e6;         // Latent heat of vaporization (J/kg)
-pub const LAPSE_STD: f64 = 0.0065;  // Standard atmosphere lapse rate (K/m)
-pub const P0_STD: f64 = 1013.25;    // Standard sea level pressure (hPa)
-pub const T0_STD: f64 = 288.15;     // Standard sea level temperature (K)
+pub const EPS: f64 = 0.62197; // Rd/Rv = Mw/Md (ratio of molecular weights)
+pub const LV: f64 = 2.501e6; // Latent heat of vaporization (J/kg)
+pub const LAPSE_STD: f64 = 0.0065; // Standard atmosphere lapse rate (K/m)
+pub const P0_STD: f64 = 1013.25; // Standard sea level pressure (hPa)
+pub const T0_STD: f64 = 288.15; // Standard sea level temperature (K)
 
 // --- SHARPpy Thermodynamic Approximations ---
 
@@ -28,15 +28,13 @@ pub fn wobf(t: f64) -> f64 {
         let npol = 1.0
             + t * (-8.841660499999999e-3
                 + t * (1.4714143e-4
-                    + t * (-9.671989000000001e-7
-                        + t * (-3.2607217e-8 + t * (-3.8598073e-10)))));
+                    + t * (-9.671989000000001e-7 + t * (-3.2607217e-8 + t * (-3.8598073e-10)))));
         15.13 / (npol * npol * npol * npol)
     } else {
         let ppol = t
             * (4.9618922e-07
                 + t * (-6.1059365e-09
-                    + t * (3.9401551e-11
-                        + t * (-1.2588129e-13 + t * (1.6688280e-16)))));
+                    + t * (3.9401551e-11 + t * (-1.2588129e-13 + t * (1.6688280e-16)))));
         let ppol = 1.0 + t * (3.6182989e-03 + t * (-1.3603273e-05 + ppol));
         (29.93 / (ppol * ppol * ppol * ppol)) + (0.96 * t) - 14.8
     }
@@ -80,9 +78,8 @@ pub fn lcltemp(t: f64, td: f64) -> f64 {
 /// Dry lift to LCL. Returns (p_lcl, t_lcl) in (hPa, Celsius).
 pub fn drylift(p: f64, t: f64, td: f64) -> (f64, f64) {
     let t_lcl = lcltemp(t, td);
-    let p_lcl = 1000.0
-        * (((t_lcl + ZEROCNK) / ((t + ZEROCNK) * ((1000.0 / p).powf(ROCP)))))
-            .powf(1.0 / ROCP);
+    let p_lcl =
+        1000.0 * ((t_lcl + ZEROCNK) / ((t + ZEROCNK) * ((1000.0 / p).powf(ROCP)))).powf(1.0 / ROCP);
     (p_lcl, t_lcl)
 }
 
@@ -142,9 +139,7 @@ pub fn temp_at_mixrat(w: f64, p: f64) -> f64 {
     let c6: f64 = 1.2035;
 
     let x = (w * p / (622.0 + w)).log10();
-    (10.0_f64.powf(c1 * x + c2) - c3
-        + c4 * (10.0_f64.powf(c5 * x) - c6).powi(2))
-        - ZEROCNK
+    (10.0_f64.powf(c1 * x + c2) - c3 + c4 * (10.0_f64.powf(c5 * x) - c6).powi(2)) - ZEROCNK
 }
 
 // --- Helper Functions ---
@@ -193,10 +188,7 @@ pub fn get_env_at_pres(
             return (t_interp, td_interp);
         }
     }
-    (
-        t_prof[t_prof.len() - 1],
-        td_prof[td_prof.len() - 1],
-    )
+    (t_prof[t_prof.len() - 1], td_prof[td_prof.len() - 1])
 }
 
 // --- Parcel Selectors ---
@@ -695,11 +687,7 @@ pub fn wet_bulb_potential_temperature(p_hpa: f64, t_c: f64, td_c: f64) -> f64 {
 
 /// Lift a parcel and compute parcel temperature at each level.
 /// Returns parcel virtual temperature profile above LCL via moist adiabat.
-fn lift_parcel_profile(
-    p_prof: &[f64],
-    t_prof: &[f64],
-    td_prof: &[f64],
-) -> (f64, f64, Vec<f64>) {
+fn lift_parcel_profile(p_prof: &[f64], t_prof: &[f64], td_prof: &[f64]) -> (f64, f64, Vec<f64>) {
     // Use surface-based parcel
     let p_sfc = p_prof[0];
     let t_sfc = t_prof[0];
@@ -739,11 +727,7 @@ fn lift_parcel_profile(
 /// Equilibrium Level (EL).
 /// Returns Option<(pressure_hPa, temperature_C)> of the EL.
 /// Profiles should be surface-first, decreasing pressure.
-pub fn el(
-    p_profile: &[f64],
-    t_profile: &[f64],
-    td_profile: &[f64],
-) -> Option<(f64, f64)> {
+pub fn el(p_profile: &[f64], t_profile: &[f64], td_profile: &[f64]) -> Option<(f64, f64)> {
     let (p_lcl, _t_lcl, parcel_tv) = lift_parcel_profile(p_profile, t_profile, td_profile);
 
     let mut found_positive = false;

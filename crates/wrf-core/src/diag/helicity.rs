@@ -9,8 +9,6 @@
 //! 3. If the column-mean w > 0, integrate tem1 over the layer using the
 //!    trapezoidal rule.  Otherwise UH = 0 for that column.
 
-
-
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;

@@ -1,11 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "netcdf-backend")]
 use ndarray::Axis;
-
-
 
 use crate::error::{WrfError, WrfResult};
 use crate::grid;
@@ -144,8 +142,11 @@ pub struct WrfFile {
     pub dx: f64,
     pub dy: f64,
     /// Memoization cache keyed by `"{field}_{timeidx}"`.
-    cache: Mutex<HashMap<String, Vec<f64>>>,
+    cache: Mutex<HashMap<String, SharedField>>,
+    cache_timeidx: Mutex<Option<usize>>,
 }
+
+pub type SharedField = Arc<[f64]>;
 
 // ── netcdf-backend open / read_var / attribute helpers ──
 
@@ -181,6 +182,7 @@ impl WrfFile {
             dx,
             dy,
             cache: Mutex::new(HashMap::new()),
+            cache_timeidx: Mutex::new(None),
         })
     }
 
@@ -220,8 +222,7 @@ impl WrfFile {
             .nc
             .variable("Times")
             .ok_or_else(|| WrfError::VarNotFound("Times".to_string()))?;
-        let arr: ndarray::ArrayD<u8> =
-            var.get(..).map_err(|e| WrfError::NetCdf(format!("{e}")))?;
+        let arr: ndarray::ArrayD<u8> = var.get(..).map_err(|e| WrfError::NetCdf(format!("{e}")))?;
         let shape = arr.shape();
         if shape.len() == 2 {
             let nt = shape[0];
@@ -267,13 +268,16 @@ impl WrfFile {
         let (nx, ny, nz, nt) = Self::probe_dims_pure(&hdf5)?;
 
         // Staggered dims: probe U for nx_stag, V for ny_stag, PH for nz_stag.
-        let nx_stag = hdf5.dataset_shape("U")
+        let nx_stag = hdf5
+            .dataset_shape("U")
             .map(|s| if s.len() >= 4 { s[3] } else { nx + 1 })
             .unwrap_or(nx + 1);
-        let ny_stag = hdf5.dataset_shape("V")
+        let ny_stag = hdf5
+            .dataset_shape("V")
             .map(|s| if s.len() >= 4 { s[2] } else { ny + 1 })
             .unwrap_or(ny + 1);
-        let nz_stag = hdf5.dataset_shape("PH")
+        let nz_stag = hdf5
+            .dataset_shape("PH")
             .map(|s| if s.len() >= 4 { s[1] } else { nz + 1 })
             .unwrap_or(nz + 1);
 
@@ -293,6 +297,7 @@ impl WrfFile {
             dx,
             dy,
             cache: Mutex::new(HashMap::new()),
+            cache_timeidx: Mutex::new(None),
         })
     }
 
@@ -354,7 +359,9 @@ impl WrfFile {
             for i in 0..nt {
                 let start = i * slen;
                 let end = start + slen;
-                if end > raw.len() { break; }
+                if end > raw.len() {
+                    break;
+                }
                 let s = String::from_utf8_lossy(&raw[start..end])
                     .trim_end_matches('\0')
                     .to_string();
@@ -389,6 +396,16 @@ impl WrfFile {
         self.nx * self.ny * self.nz
     }
 
+    /// Keep cached intermediates scoped to a single timestep so related
+    /// diagnostics can reuse them without letting memory grow unbounded.
+    pub fn prepare_cache_for_time(&self, t: usize) {
+        let mut cached_timeidx = self.cache_timeidx.lock().unwrap();
+        if *cached_timeidx != Some(t) {
+            self.cache.lock().unwrap().clear();
+            *cached_timeidx = Some(t);
+        }
+    }
+
     /// Clear the intermediate-result cache, freeing memory.
     ///
     /// Called automatically after each `getvar` call so that 3-D
@@ -396,6 +413,7 @@ impl WrfFile {
     /// beyond the computation that needed them.
     pub fn clear_cache(&self) {
         self.cache.lock().unwrap().clear();
+        *self.cache_timeidx.lock().unwrap() = None;
     }
 
     // ── Cached derived fields ──
@@ -404,23 +422,23 @@ impl WrfFile {
         &self,
         key: &str,
         f: impl FnOnce() -> WrfResult<Vec<f64>>,
-    ) -> WrfResult<Vec<f64>> {
+    ) -> WrfResult<SharedField> {
         {
             let cache = self.cache.lock().unwrap();
             if let Some(v) = cache.get(key) {
-                return Ok(v.clone());
+                return Ok(Arc::clone(v));
             }
         }
-        let result = f()?;
+        let result = Arc::<[f64]>::from(f()?);
         self.cache
             .lock()
             .unwrap()
-            .insert(key.to_string(), result.clone());
+            .insert(key.to_string(), Arc::clone(&result));
         Ok(result)
     }
 
     /// Full pressure = P + PB (Pa). Shape: `[nz, ny, nx]`.
-    pub fn full_pressure(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn full_pressure(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("pressure_{t}");
         self.cached_or_compute(&key, || {
             let p = self.read_var("P", t)?;
@@ -430,7 +448,7 @@ impl WrfFile {
     }
 
     /// Full potential temperature = T + 300 (K). Shape: `[nz, ny, nx]`.
-    pub fn full_theta(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn full_theta(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("theta_{t}");
         self.cached_or_compute(&key, || {
             let th = self.read_var("T", t)?;
@@ -440,7 +458,7 @@ impl WrfFile {
 
     /// Full geopotential = PH + PHB (m^2/s^2), destaggered in Z.
     /// Shape: `[nz, ny, nx]`.
-    pub fn full_geopotential(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn full_geopotential(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("geopt_{t}");
         self.cached_or_compute(&key, || {
             let ph = self.read_var("PH", t)?;
@@ -452,7 +470,7 @@ impl WrfFile {
 
     /// Geopotential on staggered Z levels (not destaggered).
     /// Shape: `[nz_stag, ny, nx]`.
-    pub fn geopotential_stag(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn geopotential_stag(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("geopt_stag_{t}");
         self.cached_or_compute(&key, || {
             let ph = self.read_var("PH", t)?;
@@ -462,7 +480,7 @@ impl WrfFile {
     }
 
     /// Temperature = theta * (p / p0)^kappa (K). Shape: `[nz, ny, nx]`.
-    pub fn temperature(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn temperature(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("temp_{t}");
         self.cached_or_compute(&key, || {
             let theta = self.full_theta(t)?;
@@ -476,7 +494,7 @@ impl WrfFile {
     }
 
     /// Height MSL = geopotential / g (m). Shape: `[nz, ny, nx]`.
-    pub fn height_msl(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn height_msl(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("height_msl_{t}");
         self.cached_or_compute(&key, || {
             let geopt = self.full_geopotential(t)?;
@@ -485,13 +503,13 @@ impl WrfFile {
     }
 
     /// Terrain height (m). Shape: `[ny, nx]`.
-    pub fn terrain(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn terrain(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("terrain_{t}");
         self.cached_or_compute(&key, || self.read_var("HGT", t))
     }
 
     /// Height AGL = height_msl - terrain (m). Shape: `[nz, ny, nx]`.
-    pub fn height_agl(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn height_agl(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("height_agl_{t}");
         self.cached_or_compute(&key, || {
             let h = self.height_msl(t)?;
@@ -505,26 +523,29 @@ impl WrfFile {
     }
 
     /// Water vapour mixing ratio (kg/kg). Shape: `[nz, ny, nx]`.
-    pub fn qvapor(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("QVAPOR", t)
+    pub fn qvapor(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("qvapor_{t}");
+        self.cached_or_compute(&key, || self.read_var("QVAPOR", t))
     }
 
     /// Surface pressure (Pa). Shape: `[ny, nx]`.
-    pub fn psfc(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("PSFC", t)
+    pub fn psfc(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("psfc_{t}");
+        self.cached_or_compute(&key, || self.read_var("PSFC", t))
     }
 
     /// 2-m temperature (K). Shape: `[ny, nx]`.
     /// Use `t2_for_opts` when lake_interp may be active.
-    pub fn t2(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("T2", t)
+    pub fn t2(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("t2_{t}");
+        self.cached_or_compute(&key, || self.read_var("T2", t))
     }
 
     /// 2-m temperature, with optional lake correction from ComputeOpts.
     pub fn t2_for_opts(&self, t: usize, opts: &crate::compute::ComputeOpts) -> WrfResult<Vec<f64>> {
         match opts.lake_interp {
             Some(area) if area > 0.0 => self.t2_lake_corrected(t, area),
-            _ => self.t2(t),
+            _ => Ok(self.t2(t)?.to_vec()),
         }
     }
 
@@ -542,15 +563,16 @@ impl WrfFile {
 
     /// 2-m mixing ratio (kg/kg). Shape: `[ny, nx]`.
     /// Use `q2_for_opts` when lake_interp may be active.
-    pub fn q2(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("Q2", t)
+    pub fn q2(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("q2_{t}");
+        self.cached_or_compute(&key, || self.read_var("Q2", t))
     }
 
     /// 2-m mixing ratio, with optional lake correction from ComputeOpts.
     pub fn q2_for_opts(&self, t: usize, opts: &crate::compute::ComputeOpts) -> WrfResult<Vec<f64>> {
         match opts.lake_interp {
             Some(area) if area > 0.0 => self.q2_lake_corrected(t, area),
-            _ => self.q2(t),
+            _ => Ok(self.q2(t)?.to_vec()),
         }
     }
 
@@ -571,7 +593,7 @@ impl WrfFile {
         let key = format!("lake_mask_{t}_{area_km2}");
         let cached = {
             let cache = self.cache.lock().unwrap();
-            cache.get(&key).cloned()
+            cache.get(&key).map(Arc::clone)
         };
         if let Some(mask_f64) = cached {
             return Ok(mask_f64.iter().map(|v| *v > 0.5).collect());
@@ -583,10 +605,13 @@ impl WrfFile {
         let nx = self.nx;
 
         // Water categories in USGS and MODIS land use
-        let is_water: Vec<bool> = lu.iter().map(|v| {
-            let cat = *v as i32;
-            cat == 16 || cat == 17 || cat == 21
-        }).collect();
+        let is_water: Vec<bool> = lu
+            .iter()
+            .map(|v| {
+                let cat = *v as i32;
+                cat == 16 || cat == 17 || cat == 21
+            })
+            .collect();
 
         // Connected component labeling (flood fill)
         let mut labels = vec![0u32; nxy];
@@ -612,7 +637,9 @@ impl WrfFile {
                 // 8-connected neighbors
                 for dj in [-1i32, 0, 1] {
                     for di in [-1i32, 0, 1] {
-                        if dj == 0 && di == 0 { continue; }
+                        if dj == 0 && di == 0 {
+                            continue;
+                        }
                         let nj = j as i32 + dj;
                         let ni = i as i32 + di;
                         if nj >= 0 && nj < ny as i32 && ni >= 0 && ni < nx as i32 {
@@ -631,30 +658,45 @@ impl WrfFile {
         let grid_area_km2 = (self.dx * self.dy) / 1e6;
         let count_threshold = (area_km2 / grid_area_km2) as usize;
 
-        let is_lake: Vec<bool> = labels.iter().map(|&lbl| {
-            if lbl == 0 { return false; }
-            label_sizes[lbl as usize] < count_threshold
-        }).collect();
+        let is_lake: Vec<bool> = labels
+            .iter()
+            .map(|&lbl| {
+                if lbl == 0 {
+                    return false;
+                }
+                label_sizes[lbl as usize] < count_threshold
+            })
+            .collect();
 
         // Cache as f64
-        let mask_f64: Vec<f64> = is_lake.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect();
-        self.cache.lock().unwrap().insert(key, mask_f64);
+        let mask_f64: SharedField = Arc::<[f64]>::from(
+            is_lake
+                .iter()
+                .map(|&b| if b { 1.0 } else { 0.0 })
+                .collect::<Vec<_>>(),
+        );
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(key, Arc::clone(&mask_f64));
 
         Ok(is_lake)
     }
 
     /// 10-m U wind (m/s). Shape: `[ny, nx]`.
-    pub fn u10(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("U10", t)
+    pub fn u10(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("u10_{t}");
+        self.cached_or_compute(&key, || self.read_var("U10", t))
     }
 
     /// 10-m V wind (m/s). Shape: `[ny, nx]`.
-    pub fn v10(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("V10", t)
+    pub fn v10(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("v10_{t}");
+        self.cached_or_compute(&key, || self.read_var("V10", t))
     }
 
     /// Destaggered U wind (m/s). Shape: `[nz, ny, nx]`.
-    pub fn u_destag(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn u_destag(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("u_destag_{t}");
         self.cached_or_compute(&key, || {
             let u_stag = self.read_var("U", t)?;
@@ -663,7 +705,7 @@ impl WrfFile {
     }
 
     /// Destaggered V wind (m/s). Shape: `[nz, ny, nx]`.
-    pub fn v_destag(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn v_destag(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("v_destag_{t}");
         self.cached_or_compute(&key, || {
             let v_stag = self.read_var("V", t)?;
@@ -672,7 +714,7 @@ impl WrfFile {
     }
 
     /// Destaggered W wind (m/s). Shape: `[nz, ny, nx]`.
-    pub fn w_destag(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn w_destag(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("w_destag_{t}");
         self.cached_or_compute(&key, || {
             let w_stag = self.read_var("W", t)?;
@@ -681,27 +723,31 @@ impl WrfFile {
     }
 
     /// Latitude (degrees). Shape: `[ny, nx]`.
-    pub fn xlat(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("XLAT", t)
+    pub fn xlat(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("xlat_{t}");
+        self.cached_or_compute(&key, || self.read_var("XLAT", t))
     }
 
     /// Longitude (degrees). Shape: `[ny, nx]`.
-    pub fn xlong(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("XLONG", t)
+    pub fn xlong(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("xlong_{t}");
+        self.cached_or_compute(&key, || self.read_var("XLONG", t))
     }
 
     /// Sin of map-rotation angle. Shape: `[ny, nx]`.
-    pub fn sinalpha(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("SINALPHA", t)
+    pub fn sinalpha(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("sinalpha_{t}");
+        self.cached_or_compute(&key, || self.read_var("SINALPHA", t))
     }
 
     /// Cos of map-rotation angle. Shape: `[ny, nx]`.
-    pub fn cosalpha(&self, t: usize) -> WrfResult<Vec<f64>> {
-        self.read_var("COSALPHA", t)
+    pub fn cosalpha(&self, t: usize) -> WrfResult<SharedField> {
+        let key = format!("cosalpha_{t}");
+        self.cached_or_compute(&key, || self.read_var("COSALPHA", t))
     }
 
     /// Pressure in hPa. Shape: `[nz, ny, nx]`.
-    pub fn pressure_hpa(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn pressure_hpa(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("pressure_hpa_{t}");
         self.cached_or_compute(&key, || {
             let p = self.full_pressure(t)?;
@@ -710,13 +756,39 @@ impl WrfFile {
     }
 
     /// Temperature in Celsius. Shape: `[nz, ny, nx]`.
-    pub fn temperature_c(&self, t: usize) -> WrfResult<Vec<f64>> {
+    pub fn temperature_c(&self, t: usize) -> WrfResult<SharedField> {
         let key = format!("temp_c_{t}");
         self.cached_or_compute(&key, || {
             let tk = self.temperature(t)?;
             Ok(tk.iter().map(|v| v - 273.15).collect())
         })
     }
+
+    /// Return the raw dataset shape with the leading Time dimension removed.
+    pub fn var_shape_no_time(&self, name: &str) -> WrfResult<Vec<usize>> {
+        #[cfg(feature = "netcdf-backend")]
+        {
+            let var = self
+                .nc
+                .variable(name)
+                .ok_or_else(|| WrfError::VarNotFound(name.to_string()))?;
+            let dims: Vec<usize> = var.dimensions().iter().map(|d| d.len()).collect();
+            Ok(trim_time_dim(dims, self.nt))
+        }
+
+        #[cfg(feature = "pure-rust-reader")]
+        {
+            let dims = self.hdf5.dataset_shape(name)?;
+            Ok(trim_time_dim(dims, self.nt))
+        }
+    }
+}
+
+fn trim_time_dim(mut dims: Vec<usize>, nt: usize) -> Vec<usize> {
+    if dims.len() > 1 && dims[0] == nt {
+        dims.remove(0);
+    }
+    dims
 }
 
 /// Interpolate masked grid cells from surrounding unmasked values.
@@ -724,23 +796,71 @@ impl WrfFile {
 /// neighbors are found.
 fn interpolate_masked_2d(data: &[f64], mask: &[bool], ny: usize, nx: usize) -> Vec<f64> {
     let mut result = data.to_vec();
-    let masked_indices: Vec<usize> = mask.iter().enumerate()
+    let masked_indices: Vec<usize> = mask
+        .iter()
+        .enumerate()
         .filter(|(_, &m)| m)
         .map(|(i, _)| i)
         .collect();
 
-    let interpolated: Vec<(usize, f64)> = masked_indices.iter().map(|&idx| {
-        let cj = (idx / nx) as i32;
-        let ci = (idx % nx) as i32;
+    if masked_indices.is_empty() {
+        return result;
+    }
 
-        // Expand search radius until we find land neighbors
-        for radius in 1..=(ny.max(nx) as i32) {
+    let mut nearest_land_radius = vec![i32::MAX; mask.len()];
+    let mut queue = VecDeque::new();
+
+    for idx in 0..mask.len() {
+        if !mask[idx] {
+            nearest_land_radius[idx] = 0;
+            queue.push_back(idx);
+        }
+    }
+
+    if queue.is_empty() {
+        return result;
+    }
+
+    while let Some(idx) = queue.pop_front() {
+        let j = idx / nx;
+        let i = idx % nx;
+        let next_radius = nearest_land_radius[idx] + 1;
+
+        for dj in -1i32..=1 {
+            for di in -1i32..=1 {
+                if dj == 0 && di == 0 {
+                    continue;
+                }
+                let nj = j as i32 + dj;
+                let ni = i as i32 + di;
+                if nj < 0 || nj >= ny as i32 || ni < 0 || ni >= nx as i32 {
+                    continue;
+                }
+                let nidx = nj as usize * nx + ni as usize;
+                if next_radius < nearest_land_radius[nidx] {
+                    nearest_land_radius[nidx] = next_radius;
+                    queue.push_back(nidx);
+                }
+            }
+        }
+    }
+
+    let interpolated: Vec<(usize, f64)> = masked_indices
+        .iter()
+        .map(|&idx| {
+            let cj = (idx / nx) as i32;
+            let ci = (idx % nx) as i32;
+
+            let radius = nearest_land_radius[idx];
+            if radius == i32::MAX || radius <= 0 {
+                return (idx, data[idx]);
+            }
+
             let mut sum_val = 0.0f64;
             let mut sum_wt = 0.0f64;
 
             for dj in -radius..=radius {
                 for di in -radius..=radius {
-                    // Only check the border of the current radius ring
                     if dj.abs() != radius && di.abs() != radius {
                         continue;
                     }
@@ -760,12 +880,12 @@ fn interpolate_masked_2d(data: &[f64], mask: &[bool], ny: usize, nx: usize) -> V
             }
 
             if sum_wt > 0.0 {
-                return (idx, sum_val / sum_wt);
+                (idx, sum_val / sum_wt)
+            } else {
+                (idx, data[idx])
             }
-        }
-        // Fallback: keep original
-        (idx, data[idx])
-    }).collect();
+        })
+        .collect();
 
     for (idx, val) in interpolated {
         result[idx] = val;

@@ -1,17 +1,20 @@
 //! Extra diagnostic variables:
 //! lapse rates, freezing level, wet-bulb zero, theta_w, fire indices
 
-
-
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;
+use rayon::prelude::*;
 
 /// 700-500 hPa lapse rate (°C/km). `[ny, nx]`
 ///
 /// Delegates to the generic compute_lapse_rate with pressure bounds.
 /// Supports use_virtual and lake_interp via opts.
-pub fn compute_lapse_rate_700_500(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
+pub fn compute_lapse_rate_700_500(
+    f: &WrfFile,
+    t: usize,
+    opts: &ComputeOpts,
+) -> WrfResult<Vec<f64>> {
     let mut lr_opts = opts.clone();
     lr_opts.bottom_p = Some(700.0);
     lr_opts.top_p = Some(500.0);
@@ -128,7 +131,7 @@ pub fn compute_fosberg(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<
     let nxy = f.nxy();
 
     Ok((0..nxy)
-        .into_iter()
+        .into_par_iter()
         .map(|ij| {
             let t_k = t2[ij];
             let t_c = t_k - 273.15;
@@ -202,7 +205,7 @@ pub fn compute_hdw(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
     let nxy = f.nxy();
 
     Ok((0..nxy)
-        .into_iter()
+        .into_par_iter()
         .map(|ij| {
             let t_c = t2[ij] - 273.15;
             let p_hpa = psfc[ij] / 100.0;
@@ -235,15 +238,23 @@ pub fn compute_lapse_rate(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
 
     let tc = f.temperature_c(t)?;
     let h_agl = f.height_agl(t)?;
-    let qv = if use_virtual { Some(f.qvapor(t)?) } else { None };
-    let pres_hpa = if use_pressure { Some(f.pressure_hpa(t)?) } else { None };
+    let qv = if use_virtual {
+        Some(f.qvapor(t)?)
+    } else {
+        None
+    };
+    let pres_hpa = if use_pressure {
+        Some(f.pressure_hpa(t)?)
+    } else {
+        None
+    };
 
     // For surface (bottom_m=0 or not set), use 2m data with lake_interp support
     let bottom_is_surface = !use_pressure && opts.bottom_m.unwrap_or(0.0) < 10.0;
     let t2_c = if bottom_is_surface {
         let t2_k = match opts.lake_interp {
             Some(a) if a > 0.0 => f.t2_lake_corrected(t, a)?,
-            _ => f.t2(t)?,
+            _ => f.t2(t)?.to_vec(),
         };
         Some(t2_k.iter().map(|v| v - 273.15).collect::<Vec<f64>>())
     } else {
@@ -252,7 +263,7 @@ pub fn compute_lapse_rate(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
     let q2 = if bottom_is_surface && use_virtual {
         Some(match opts.lake_interp {
             Some(a) if a > 0.0 => f.q2_lake_corrected(t, a)?,
-            _ => f.q2(t)?,
+            _ => f.q2(t)?.to_vec(),
         })
     } else {
         None
@@ -282,7 +293,7 @@ pub fn compute_lapse_rate(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResul
             // Pressure mode: interpolate T and H at given pressure levels
             let p = pres_hpa.as_ref().unwrap();
             let p_bot = opts.bottom_p.unwrap_or(700.0); // hPa (higher pressure = lower)
-            let p_top = opts.top_p.unwrap_or(500.0);    // hPa (lower pressure = higher)
+            let p_top = opts.top_p.unwrap_or(500.0); // hPa (lower pressure = higher)
 
             let interp_at_p = |target_p: f64| -> (f64, f64) {
                 // Pressure decreases with height; scan upward

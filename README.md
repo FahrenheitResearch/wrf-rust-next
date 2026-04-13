@@ -5,7 +5,7 @@ Rust-powered WRF post-processing with Python bindings. 83 diagnostic variables, 
 ## Install
 
 ```bash
-pip install wrf-rust
+pip install wrf-rust-next
 ```
 
 Pre-built wheels for Python 3.10-3.13 on Linux, macOS, and Windows. No Rust toolchain, no system libraries, no conda required.
@@ -17,6 +17,15 @@ The repo now includes a full WRF community setup guide for Windows, WSL 2, real-
 - Manual-first Pages guide: [docs/index.html](docs/index.html)
 - Starter files: [docs/starter-files/README.md](docs/starter-files/README.md)
 - Optional Codex skill: [skills/wrf-community-onboarding/SKILL.md](skills/wrf-community-onboarding/SKILL.md)
+
+## Scientific Notes
+
+Recent correctness work tightened the severe-weather diagnostics without changing the basic `getvar()` workflow:
+
+- `effective_inflow` now returns the actual effective inflow base/top heights, not the MU parcel EL.
+- Effective `stp` and `scp` now use effective SRH plus effective bulk wind difference (EBWD).
+- `bri` now uses BRN shear instead of plain 0-6 km bulk shear.
+- Raw staggered fields (`U`, `V`, `W`) keep their native WRF shapes, and `ALL_TIMES` stacking now runs in Rust.
 
 ## Usage
 
@@ -151,7 +160,7 @@ Plus 17 variables wrf-python doesn't have (STP, SCP, EHI, critical angle, shear,
 
 `sbcape` `sbcin` `mlcape` `mlcin` `mucape` `mucin` `cape` `cin` `lcl` `lfc` `el` `effective_cape` `effective_inflow` `cape2d` `cape3d`
 
-All CAPE variables support `top_m` for truncated integration (e.g. `top_m=3000` for 3CAPE). Generic `cape`/`cin` accept `parcel_type` or custom parcel (`parcel_pressure`, `parcel_temperature`, `parcel_dewpoint`).
+All CAPE variables support `top_m` for truncated integration (e.g. `top_m=3000` for 3CAPE). Generic `cape`/`cin` accept `parcel_type` or custom parcel (`parcel_pressure`, `parcel_temperature`, `parcel_dewpoint`). `effective_inflow` returns a two-plane output: effective layer base followed by effective layer top, both in meters AGL.
 
 ### Wind
 
@@ -167,7 +176,7 @@ SRH uses Bunkers Internal Dynamics method. `storm_motion=(u, v)` accepts either 
 
 `stp` `stp_fixed` `stp_effective` `scp` `ehi` `critical_angle` `ship` `bri`
 
-STP supports `layer_type="effective"` for the 5-term formula with MLCIN.
+STP supports `layer_type="effective"` for the 5-term formula with MLCIN. Effective `stp` uses ESRH + EBWD, and `scp` uses MUCAPE + effective SRH + EBWD.
 
 ### Radar & cloud
 

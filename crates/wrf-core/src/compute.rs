@@ -115,6 +115,8 @@ pub fn getvar(
         )));
     }
 
+    file.prepare_cache_for_time(t);
+
     // Look up in computed variable registry first
     let vardef = match get_var_def(name) {
         Some(v) => v,
@@ -126,10 +128,6 @@ pub fn getvar(
     };
 
     let mut data = (vardef.compute)(file, t, opts)?;
-
-    // Free cached intermediates (full_pressure, temperature, etc.)
-    // so they don't persist beyond this computation.
-    file.clear_cache();
 
     let shape = match vardef.dim {
         VarDim::TwoD => vec![file.ny, file.nx],
@@ -173,37 +171,68 @@ pub fn getvar(
     })
 }
 
+/// Compute and stack all timesteps for a variable inside Rust so Python does
+/// not need to bounce across the FFI boundary once per timestep.
+pub fn getvar_all_times(file: &WrfFile, name: &str, opts: &ComputeOpts) -> WrfResult<VarOutput> {
+    if file.nt == 0 {
+        return Err(WrfError::InvalidParam(
+            "cannot stack ALL_TIMES for a file with zero timesteps".into(),
+        ));
+    }
+
+    let first = getvar(file, name, Some(0), opts)?;
+    let frame_len = first.data.len();
+    let mut data = Vec::with_capacity(frame_len * file.nt);
+    data.extend_from_slice(&first.data);
+
+    for t in 1..file.nt {
+        let frame = getvar(file, name, Some(t), opts)?;
+        if frame.shape != first.shape {
+            return Err(WrfError::DimMismatch(format!(
+                "shape mismatch for ALL_TIMES on '{name}': {:?} at t=0 vs {:?} at t={t}",
+                first.shape, frame.shape
+            )));
+        }
+        data.extend_from_slice(&frame.data);
+    }
+
+    let mut shape = Vec::with_capacity(first.shape.len() + 1);
+    shape.push(file.nt);
+    shape.extend(first.shape.iter().copied());
+
+    Ok(VarOutput {
+        data,
+        shape,
+        units: first.units,
+        description: first.description,
+    })
+}
+
 /// Fallback: read a raw WRF variable directly from the file.
 /// Used when the variable name is not in the computed registry.
 fn getvar_raw(file: &WrfFile, name: &str, t: usize, opts: &ComputeOpts) -> WrfResult<VarOutput> {
+    let upper_name = name.to_uppercase();
     // Try reading the variable by its exact name (case-sensitive, uppercase WRF convention)
     let data = file
         .read_var(name, t)
-        .or_else(|_| file.read_var(&name.to_uppercase(), t))
+        .or_else(|_| file.read_var(&upper_name, t))
         .map_err(|_| {
             WrfError::UnknownVar(format!(
                 "{name} (not in computed registry and not found as raw variable in file)"
             ))
         })?;
 
-    let nxy = file.nxy();
-    let nxyz = file.nxyz();
-
-    let shape = if data.len() == nxy {
-        vec![file.ny, file.nx]
-    } else if data.len() == nxyz {
-        vec![file.nz, file.ny, file.nx]
-    } else if data.len() % nxy == 0 {
-        let nlevels = data.len() / nxy;
-        vec![nlevels, file.ny, file.nx]
-    } else {
-        vec![data.len()]
-    };
+    let shape = file
+        .var_shape_no_time(name)
+        .or_else(|_| file.var_shape_no_time(&upper_name))
+        .ok()
+        .filter(|shape| !shape.is_empty() && shape.iter().product::<usize>() == data.len())
+        .unwrap_or_else(|| vec![data.len()]);
 
     // Raw variables don't have a known default unit, but if the user
     // requests a conversion from/to a specific pair we can try.
     // Common WRF raw variables and their units:
-    let default_unit = match name.to_uppercase().as_str() {
+    let default_unit = match upper_name.as_str() {
         "RAINNC" | "RAINC" | "RAINSH" | "SNOWNC" | "GRAUPELNC" => "mm",
         "T2" | "TSK" | "SST" => "K",
         "PSFC" => "Pa",

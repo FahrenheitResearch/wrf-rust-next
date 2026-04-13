@@ -8,7 +8,7 @@
 //! Vendored from wx-math crate for self-contained builds.
 
 use super::thermo as metfuncs;
-
+use rayon::prelude::*;
 
 /// Physical constants
 const RD: f64 = 287.058;
@@ -48,6 +48,74 @@ fn extract_column(data: &[f64], nz: usize, ny: usize, nx: usize, j: usize, i: us
         col.push(data[k * ny * nx + j * nx + i]);
     }
     col
+}
+
+/// Reuse a worker-local scratch vector when extracting repeated columns.
+fn extract_column_into(data: &[f64], nz: usize, nxy: usize, ij: usize, out: &mut Vec<f64>) {
+    out.clear();
+    if out.capacity() < nz {
+        out.reserve(nz - out.capacity());
+    }
+    for k in 0..nz {
+        out.push(data[k * nxy + ij]);
+    }
+}
+
+fn pressure_weighted_layer_mean(
+    heights: &[f64],
+    u_prof: &[f64],
+    v_prof: &[f64],
+    p_prof: &[f64],
+    bottom_m: f64,
+    top_m: f64,
+) -> (f64, f64) {
+    let u_bot = interp_at_height(bottom_m, heights, u_prof);
+    let v_bot = interp_at_height(bottom_m, heights, v_prof);
+    let p_bot = interp_at_height(bottom_m, heights, p_prof);
+    let u_top = interp_at_height(top_m, heights, u_prof);
+    let v_top = interp_at_height(top_m, heights, v_prof);
+    let p_top = interp_at_height(top_m, heights, p_prof);
+
+    let mut hs = Vec::with_capacity(heights.len() + 2);
+    let mut us = Vec::with_capacity(u_prof.len() + 2);
+    let mut vs = Vec::with_capacity(v_prof.len() + 2);
+    let mut ps = Vec::with_capacity(p_prof.len() + 2);
+
+    hs.push(bottom_m);
+    us.push(u_bot);
+    vs.push(v_bot);
+    ps.push(p_bot);
+
+    for i in 0..heights.len() {
+        if heights[i] > bottom_m && heights[i] < top_m {
+            hs.push(heights[i]);
+            us.push(u_prof[i]);
+            vs.push(v_prof[i]);
+            ps.push(p_prof[i]);
+        }
+    }
+
+    hs.push(top_m);
+    us.push(u_top);
+    vs.push(v_top);
+    ps.push(p_top);
+
+    let mut sum_u = 0.0;
+    let mut sum_v = 0.0;
+    let mut total_dp = 0.0;
+
+    for i in 0..(ps.len() - 1) {
+        let dp = (ps[i] - ps[i + 1]).abs();
+        sum_u += 0.5 * (us[i] + us[i + 1]) * dp;
+        sum_v += 0.5 * (vs[i] + vs[i + 1]) * dp;
+        total_dp += dp;
+    }
+
+    if total_dp <= 0.0 {
+        (u_bot, v_bot)
+    } else {
+        (sum_u / total_dp, sum_v / total_dp)
+    }
 }
 
 /// Compute dewpoint (Celsius) from mixing ratio (kg/kg) and pressure (hPa).
@@ -93,59 +161,63 @@ pub fn compute_cape_cin(
     parcel_type: &str,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     let n2d = ny * nx;
+    let nxy = n2d;
     let parcel_type_owned = parcel_type.to_string();
 
-    // Parallel computation over all grid points
     let results: Vec<(f64, f64, f64, f64)> = (0..n2d)
-        .into_iter()
-        .map(|idx| {
-            let j = idx / nx;
-            let i = idx % nx;
+        .into_par_iter()
+        .map_init(
+            || {
+                (
+                    Vec::with_capacity(nz),
+                    Vec::with_capacity(nz),
+                    Vec::with_capacity(nz),
+                    Vec::with_capacity(nz),
+                    Vec::with_capacity(nz),
+                )
+            },
+            |(p_col, t_col, q_col, h_col, td_col), idx| {
+                extract_column_into(pressure_3d, nz, nxy, idx, p_col);
+                extract_column_into(temperature_c_3d, nz, nxy, idx, t_col);
+                extract_column_into(qvapor_3d, nz, nxy, idx, q_col);
+                extract_column_into(height_agl_3d, nz, nxy, idx, h_col);
 
-            // Extract column profiles
-            let p_col = extract_column(pressure_3d, nz, ny, nx, j, i);
-            let t_col = extract_column(temperature_c_3d, nz, ny, nx, j, i);
-            let q_col = extract_column(qvapor_3d, nz, ny, nx, j, i);
-            let h_col = extract_column(height_agl_3d, nz, ny, nx, j, i);
+                td_col.clear();
+                if td_col.capacity() < nz {
+                    td_col.reserve(nz - td_col.capacity());
+                }
 
-            // Convert to hPa for metfuncs (temperature already in Celsius)
-            let mut p_hpa: Vec<f64> = p_col.iter().map(|&p| p / 100.0).collect();
-            let t_c: Vec<f64> = t_col;
-            let mut td_c: Vec<f64> = Vec::with_capacity(nz);
-            for k in 0..nz {
-                td_c.push(dewpoint_from_q(q_col[k], p_hpa[k]));
-            }
-            let mut h_agl: Vec<f64> = h_col;
+                for k in 0..nz {
+                    p_col[k] /= 100.0;
+                    td_col.push(dewpoint_from_q(q_col[k], p_col[k]));
+                }
 
-            // Ensure profiles are ordered surface-to-top (decreasing pressure)
-            if p_hpa.len() > 1 && p_hpa[0] < p_hpa[p_hpa.len() - 1] {
-                p_hpa.reverse();
-                let mut t_c = t_c;
-                t_c.reverse();
-                td_c.reverse();
-                h_agl.reverse();
-                // Surface values
+                if p_col.len() > 1 && p_col[0] < p_col[p_col.len() - 1] {
+                    p_col.reverse();
+                    t_col.reverse();
+                    td_col.reverse();
+                    h_col.reverse();
+                }
+
                 let psfc_hpa = psfc[idx] / 100.0;
                 let t2m_c = t2[idx] - ZEROCNK;
                 let td2m_c = dewpoint_from_q(q2[idx], psfc_hpa);
-                return metfuncs::cape_cin_core(
-                    &p_hpa, &t_c, &td_c, &h_agl,
-                    psfc_hpa, t2m_c, td2m_c,
-                    &parcel_type_owned, 100.0, 300.0, None,
-                );
-            }
 
-            // Surface values
-            let psfc_hpa = psfc[idx] / 100.0;
-            let t2m_c = t2[idx] - ZEROCNK;
-            let td2m_c = dewpoint_from_q(q2[idx], psfc_hpa);
-
-            metfuncs::cape_cin_core(
-                &p_hpa, &t_c, &td_c, &h_agl,
-                psfc_hpa, t2m_c, td2m_c,
-                &parcel_type_owned, 100.0, 300.0, None,
-            )
-        })
+                metfuncs::cape_cin_core(
+                    p_col,
+                    t_col,
+                    td_col,
+                    h_col,
+                    psfc_hpa,
+                    t2m_c,
+                    td2m_c,
+                    &parcel_type_owned,
+                    100.0,
+                    300.0,
+                    None,
+                )
+            },
+        )
         .collect();
 
     let mut cape_2d = Vec::with_capacity(n2d);
@@ -198,39 +270,39 @@ pub fn compute_srh_with_pressure(
 ) -> Vec<f64> {
     let n2d = ny * nx;
     let has_pressure = pressure_hpa_3d.len() == nz * ny * nx;
+    let nxy = n2d;
 
     (0..n2d)
-        .into_iter()
-        .map(|idx| {
-            let j = idx / nx;
-            let i = idx % nx;
+        .into_par_iter()
+        .map_init(
+            || {
+                (
+                    Vec::with_capacity(nz),
+                    Vec::with_capacity(nz),
+                    Vec::with_capacity(nz),
+                    Vec::with_capacity(nz),
+                )
+            },
+            |(u_col, v_col, h_col, p_col), idx| {
+                extract_column_into(u_3d, nz, nxy, idx, u_col);
+                extract_column_into(v_3d, nz, nxy, idx, v_col);
+                extract_column_into(height_agl_3d, nz, nxy, idx, h_col);
+                if has_pressure {
+                    extract_column_into(pressure_hpa_3d, nz, nxy, idx, p_col);
+                } else {
+                    p_col.clear();
+                }
 
-            let u_col = extract_column(u_3d, nz, ny, nx, j, i);
-            let v_col = extract_column(v_3d, nz, ny, nx, j, i);
-            let h_col = extract_column(height_agl_3d, nz, ny, nx, j, i);
-            let p_col = if has_pressure {
-                extract_column(pressure_hpa_3d, nz, ny, nx, j, i)
-            } else {
-                vec![]
-            };
+                if h_col.len() > 1 && h_col[0] > h_col[h_col.len() - 1] {
+                    h_col.reverse();
+                    u_col.reverse();
+                    v_col.reverse();
+                    p_col.reverse();
+                }
 
-            // Ensure ordered from surface upward
-            let (h_prof, u_prof, v_prof, p_prof) = if h_col.len() > 1 && h_col[0] > h_col[h_col.len() - 1] {
-                let mut h = h_col;
-                let mut u = u_col;
-                let mut v = v_col;
-                let mut p = p_col;
-                h.reverse();
-                u.reverse();
-                v.reverse();
-                p.reverse();
-                (h, u, v, p)
-            } else {
-                (h_col, u_col, v_col, p_col)
-            };
-
-            compute_srh_column(&h_prof, &u_prof, &v_prof, &p_prof, top_m)
-        })
+                compute_srh_column(h_col, u_col, v_col, p_col, top_m)
+            },
+        )
         .collect()
 }
 
@@ -249,58 +321,29 @@ fn compute_srh_column(
         return 0.0;
     }
 
-    let mean_depth = 6000.0;
     let has_pressure = p_prof.len() == nz;
-
-    // 1. Compute mean wind in 0-6 km layer
-    // Matches Solarpower07's implementation:
-    //   full_u = concat([u_10m], u_layer[h>0 & h<6000], [u_6km_interp])
-    //   mean = np.mean(full_u)
-    let u_6km = interp_at_height(mean_depth, heights, u_prof);
-    let v_6km = interp_at_height(mean_depth, heights, v_prof);
-
-    let mut sum_u = u_prof[0] + u_6km; // 10m wind + interpolated 6km
-    let mut sum_v = v_prof[0] + v_6km;
-    let mut count = 2usize; // count the 10m and 6km endpoints
-
-    for k in 1..nz {
-        // Strict inequality: h > 0 AND h < 6000 (excludes exact boundaries)
-        if heights[k] > 0.0 && heights[k] < mean_depth {
-            sum_u += u_prof[k];
-            sum_v += v_prof[k];
-            count += 1;
+    let (storm_u, storm_v) = if has_pressure {
+        let (mean_u, mean_v) =
+            pressure_weighted_layer_mean(heights, u_prof, v_prof, p_prof, 0.0, 6000.0);
+        let (low_u, low_v) =
+            pressure_weighted_layer_mean(heights, u_prof, v_prof, p_prof, 0.0, 500.0);
+        let (high_u, high_v) =
+            pressure_weighted_layer_mean(heights, u_prof, v_prof, p_prof, 5500.0, 6000.0);
+        let shear_u = high_u - low_u;
+        let shear_v = high_v - low_v;
+        let shear_mag = (shear_u * shear_u + shear_v * shear_v).sqrt();
+        if shear_mag > 0.1 {
+            let scale = 7.5 / shear_mag;
+            (mean_u + shear_v * scale, mean_v - shear_u * scale)
+        } else {
+            (mean_u, mean_v)
         }
-        if heights[k] >= mean_depth {
-            break;
-        }
-    }
-    if count == 0 {
-        return 0.0;
-    }
-    let mean_u = sum_u / count as f64;
-    let mean_v = sum_v / count as f64;
-
-    // 2. Compute 0-6 km shear vector (from 10m surface to interpolated 6km)
-    let u_sfc = u_prof[0];
-    let v_sfc = v_prof[0];
-    let shear_u = u_6km - u_sfc;
-    let shear_v = v_6km - v_sfc;
-
-    // 3. Bunkers deviation: rotate shear 90 degrees clockwise, scale to 7.5 m/s
-    let shear_mag = (shear_u * shear_u + shear_v * shear_v).sqrt();
-    let (dev_u, dev_v) = if shear_mag > 0.1 {
-        let scale = 7.5 / shear_mag;
-        // 90-degree clockwise rotation: (u, v) -> (v, -u)
-        (shear_v * scale, -shear_u * scale)
     } else {
-        (0.0, 0.0)
+        let ((storm_u, storm_v), _, _) =
+            crate::met::wind::bunkers_storm_motion(u_prof, v_prof, heights);
+        (storm_u, storm_v)
     };
 
-    // Right-moving storm motion
-    let storm_u = mean_u + dev_u;
-    let storm_v = mean_v + dev_v;
-
-    // 4. Compute SRH
     let mut srh = 0.0;
 
     for k in 0..nz - 1 {
@@ -363,7 +406,7 @@ pub fn compute_shear(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_iter()
+        .into_par_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -373,8 +416,7 @@ pub fn compute_shear(
             let h_col = extract_column(height_agl_3d, nz, ny, nx, j, i);
 
             // Ensure ordered from surface upward
-            let (h_prof, u_prof, v_prof) = if h_col.len() > 1 && h_col[0] > h_col[h_col.len() - 1]
-            {
+            let (h_prof, u_prof, v_prof) = if h_col.len() > 1 && h_col[0] > h_col[h_col.len() - 1] {
                 let mut h = h_col;
                 let mut u = u_col;
                 let mut v = v_col;
@@ -407,12 +449,7 @@ pub fn compute_shear(
 /// STP = (CAPE/1500) * ((2000 - LCL)/1000) * (SRH_1km/150) * min(SHEAR_6km/20, 1.5)
 ///
 /// Inputs are pre-computed 2D fields, each of size `n` (ny * nx).
-pub fn compute_stp(
-    cape: &[f64],
-    lcl: &[f64],
-    srh_1km: &[f64],
-    shear_6km: &[f64],
-) -> Vec<f64> {
+pub fn compute_stp(cape: &[f64], lcl: &[f64], srh_1km: &[f64], shear_6km: &[f64]) -> Vec<f64> {
     let n = cape.len();
     let mut stp = Vec::with_capacity(n);
 
@@ -435,10 +472,7 @@ pub fn compute_stp(
 /// Energy Helicity Index: EHI = (CAPE * SRH) / 160000
 ///
 /// Inputs are pre-computed 2D fields.
-pub fn compute_ehi(
-    cape: &[f64],
-    srh: &[f64],
-) -> Vec<f64> {
+pub fn compute_ehi(cape: &[f64], srh: &[f64]) -> Vec<f64> {
     let n = cape.len();
     let mut ehi = Vec::with_capacity(n);
 
@@ -453,21 +487,23 @@ pub fn compute_ehi(
 // Supercell Composite Parameter
 // ---------------------------------------------------------------------------
 
-/// Supercell Composite Parameter: SCP = (MUCAPE/1000) * (SRH_3km/50) * (SHEAR_6km/40)
+/// Supercell Composite Parameter using effective SRH and EBWD.
 ///
 /// Inputs are pre-computed 2D fields.
-pub fn compute_scp(
-    mucape: &[f64],
-    srh_3km: &[f64],
-    shear_6km: &[f64],
-) -> Vec<f64> {
+pub fn compute_scp(mucape: &[f64], effective_srh: &[f64], ebwd: &[f64]) -> Vec<f64> {
     let n = mucape.len();
     let mut scp = Vec::with_capacity(n);
 
     for idx in 0..n {
         let cape_term = (mucape[idx] / 1000.0).max(0.0);
-        let srh_term = (srh_3km[idx] / 50.0).max(0.0);
-        let shear_term = (shear_6km[idx] / 40.0).max(0.0);
+        let srh_term = (effective_srh[idx] / 50.0).max(0.0);
+        let shear_term = if ebwd[idx] > 20.0 {
+            1.0
+        } else if ebwd[idx] < 10.0 {
+            0.0
+        } else {
+            ebwd[idx] / 20.0
+        };
         scp.push(cape_term * srh_term * shear_term);
     }
 
@@ -501,7 +537,7 @@ pub fn compute_lapse_rate(
     let top_m_val = top_km * 1000.0;
 
     (0..n2d)
-        .into_iter()
+        .into_par_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -511,18 +547,17 @@ pub fn compute_lapse_rate(
             let h_col = extract_column(height_agl_3d, nz, ny, nx, j, i);
 
             // Ensure ordered from surface upward
-            let (h_prof, t_prof, q_prof) =
-                if h_col.len() > 1 && h_col[0] > h_col[h_col.len() - 1] {
-                    let mut h = h_col;
-                    let mut t = t_col;
-                    let mut q = q_col;
-                    h.reverse();
-                    t.reverse();
-                    q.reverse();
-                    (h, t, q)
-                } else {
-                    (h_col, t_col, q_col)
-                };
+            let (h_prof, t_prof, q_prof) = if h_col.len() > 1 && h_col[0] > h_col[h_col.len() - 1] {
+                let mut h = h_col;
+                let mut t = t_col;
+                let mut q = q_col;
+                h.reverse();
+                t.reverse();
+                q.reverse();
+                (h, t, q)
+            } else {
+                (h_col, t_col, q_col)
+            };
 
             // Compute virtual temperature profile (Celsius)
             let tv_prof: Vec<f64> = (0..t_prof.len())
@@ -566,7 +601,7 @@ pub fn compute_pw(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_iter()
+        .into_par_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -612,7 +647,7 @@ pub fn composite_reflectivity_from_refl(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_iter()
+        .into_par_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -648,7 +683,7 @@ pub fn composite_reflectivity_from_hydrometeors(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_iter()
+        .into_par_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -869,7 +904,7 @@ pub fn significant_hail_parameter(
 ) -> Vec<f64> {
     let n = nx * ny;
     (0..n)
-        .into_iter()
+        .into_par_iter()
         .map(|i| {
             let mucape = cape[i].max(0.0);
             let mr_val = mr[i].max(0.0);
@@ -903,7 +938,7 @@ pub fn derecho_composite_parameter(
 ) -> Vec<f64> {
     let n = nx * ny;
     (0..n)
-        .into_iter()
+        .into_par_iter()
         .map(|i| {
             let dcape_term = (dcape[i] / 980.0).max(0.0);
             let cape_term = (mu_cape[i] / 2000.0).max(0.0);
@@ -932,7 +967,7 @@ pub fn supercell_composite_parameter(
 ) -> Vec<f64> {
     let n = nx * ny;
     (0..n)
-        .into_iter()
+        .into_par_iter()
         .map(|i| {
             let cape_term = (mu_cape[i] / 1000.0).max(0.0);
             let srh_term = (srh[i] / 50.0).max(0.0);
@@ -965,7 +1000,7 @@ pub fn critical_angle(
 ) -> Vec<f64> {
     let n = nx * ny;
     (0..n)
-        .into_iter()
+        .into_par_iter()
         .map(|i| {
             let inflow_u = -u_storm[i];
             let inflow_v = -v_storm[i];
@@ -1073,10 +1108,7 @@ pub fn hot_dry_windy(t_c: f64, rh: f64, wspd_ms: f64, vpd: f64) -> f64 {
 ///
 /// t_profile: Temperature (Celsius), p_profile: Pressure (hPa).
 /// Profiles are surface-first (decreasing pressure).
-pub fn dendritic_growth_zone(
-    t_profile: &[f64],
-    p_profile: &[f64],
-) -> (f64, f64) {
+pub fn dendritic_growth_zone(t_profile: &[f64], p_profile: &[f64]) -> (f64, f64) {
     let n = t_profile.len().min(p_profile.len());
     if n < 2 {
         return (f64::NAN, f64::NAN);
@@ -1154,11 +1186,7 @@ pub fn warm_nose_check(t_profile: &[f64], p_profile: &[f64]) -> bool {
 ///
 /// - t_profile: Temperature (Celsius), p_profile: Pressure (hPa)
 /// - precip_type: 0=none, 1=rain, 2=snow, 3=ice_pellets, 4=freezing_rain
-pub fn freezing_rain_composite(
-    t_profile: &[f64],
-    p_profile: &[f64],
-    precip_type: u8,
-) -> f64 {
+pub fn freezing_rain_composite(t_profile: &[f64], p_profile: &[f64], precip_type: u8) -> f64 {
     let n = t_profile.len().min(p_profile.len());
     if n < 3 {
         return 0.0;
@@ -1239,7 +1267,7 @@ pub fn interp_to_pressure_level(
     let log_target = target_level.ln();
 
     (0..n2d)
-        .into_iter()
+        .into_par_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -1305,7 +1333,7 @@ pub fn interp_to_height_level(
     let n2d = ny * nx;
 
     (0..n2d)
-        .into_iter()
+        .into_par_iter()
         .map(|idx| {
             let j = idx / nx;
             let i = idx % nx;
@@ -1374,4 +1402,63 @@ pub fn convective_inhibition_depth(p: &[f64], t: &[f64], td: &[f64]) -> f64 {
     }
 
     p_sfc - p[p.len() - 1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1.0e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn pressure_weighted_layer_mean_uses_pressure_not_plain_average() {
+        let heights = [0.0, 500.0, 6000.0];
+        let u_prof = [0.0, 10.0, 40.0];
+        let v_prof = [0.0, 0.0, 0.0];
+        let p_prof = [1000.0, 850.0, 800.0];
+
+        let (mean_u, mean_v) =
+            pressure_weighted_layer_mean(&heights, &u_prof, &v_prof, &p_prof, 0.0, 6000.0);
+        let (npw_u, npw_v) =
+            crate::met::wind::mean_wind_npw(&u_prof, &v_prof, &heights, 0.0, 6000.0);
+
+        assert_close(mean_u, 10.0);
+        assert_close(mean_v, 0.0);
+        assert_close(npw_u, 16.666666666666668);
+        assert_close(npw_v, 0.0);
+    }
+
+    #[test]
+    fn scp_applies_effective_bulk_wind_thresholds() {
+        let out = compute_scp(
+            &[1000.0, 1000.0, 1000.0],
+            &[50.0, 50.0, 50.0],
+            &[9.0, 15.0, 25.0],
+        );
+
+        assert_close(out[0], 0.0);
+        assert_close(out[1], 0.75);
+        assert_close(out[2], 1.0);
+    }
+
+    #[test]
+    fn srh_column_changes_when_pressure_weighting_is_available() {
+        let heights = [0.0, 500.0, 5500.0, 6000.0];
+        let u_prof = [0.0, 5.0, 30.0, 35.0];
+        let v_prof = [0.0, 10.0, 20.0, 20.0];
+        let p_prof = [1000.0, 850.0, 500.0, 450.0];
+
+        let weighted = compute_srh_column(&heights, &u_prof, &v_prof, &p_prof, 3000.0);
+        let unweighted = compute_srh_column(&heights, &u_prof, &v_prof, &[], 3000.0);
+
+        assert!(
+            (weighted - unweighted).abs() > 1.0,
+            "expected pressure-weighted and unweighted SRH to differ, got weighted={weighted} unweighted={unweighted}"
+        );
+    }
 }

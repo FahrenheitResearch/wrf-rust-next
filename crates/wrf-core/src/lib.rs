@@ -13,7 +13,7 @@ pub mod variables;
 #[cfg(feature = "pure-rust-reader")]
 pub mod hdf5_reader;
 
-pub use compute::{getvar, ComputeOpts, StormMotion, VarOutput};
+pub use compute::{getvar, getvar_all_times, ComputeOpts, StormMotion, VarOutput};
 pub use error::{WrfError, WrfResult};
 pub use file::WrfFile;
 pub use projection::WrfProjection;

@@ -4,8 +4,10 @@
 //! broken 0.75*(3-10km mean wind) rotated 30 degrees.
 
 use crate::compute::ComputeOpts;
+use crate::diag::cape::{build_surface_augmented_thermo_column, find_effective_inflow_layer};
 use crate::error::WrfResult;
 use crate::file::WrfFile;
+use rayon::prelude::*;
 
 const SURFACE_LAYER_HEIGHT_M: f64 = 0.0;
 
@@ -176,9 +178,8 @@ fn compute_bunkers_columns(
     let mut mn_u = vec![0.0f64; nxy];
     let mut mn_v = vec![0.0f64; nxy];
 
-    // Process columns in parallel
     let results: Vec<_> = (0..nxy)
-        .into_iter()
+        .into_par_iter()
         .map(|ij| {
             // Prepend 10m wind as the surface layer.
             let mut u_prof = Vec::with_capacity(nz + 1);
@@ -282,6 +283,9 @@ pub fn compute_effective_srh(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfRe
     let pres_hpa = f.pressure_hpa(t)?;
     let tc = f.temperature_c(t)?;
     let qv = f.qvapor(t)?;
+    let psfc = f.psfc(t)?;
+    let t2 = f.t2_for_opts(t, opts)?;
+    let q2 = f.q2_for_opts(t, opts)?;
     let u10_grid = f.u10(t)?;
     let v10_grid = f.v10(t)?;
 
@@ -308,117 +312,50 @@ pub fn compute_effective_srh(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfRe
     }
 
     let custom_sm = opts.storm_motion.as_ref();
-
-    let mut srh = vec![0.0f64; nxy];
-    srh.iter_mut().enumerate().for_each(|(ij, srh_val)| {
-        // Build augmented column profiles with a surface-layer prepend.
-        let mut p_prof = Vec::with_capacity(nz + 1);
-        let mut t_prof = Vec::with_capacity(nz + 1);
-        let mut td_prof = Vec::with_capacity(nz + 1);
-        let mut h_prof = Vec::with_capacity(nz + 1);
-        let mut u_prof = Vec::with_capacity(nz + 1);
-        let mut v_prof = Vec::with_capacity(nz + 1);
-
-        // Prepend 10m level: use surface pressure and lowest-level T/Td as approximation.
-        let idx0 = ij; // k=0 level
-        let q0 = qv[idx0].max(1e-10);
-        let e0 = q0 * pres_hpa[idx0] / (0.622 + q0);
-        let ln_e0 = (e0 / 6.112).max(1e-10).ln();
-        let td0 = (243.5 * ln_e0) / (17.67 - ln_e0);
-
-        p_prof.push(pres_hpa[idx0]); // approximate surface pressure
-        t_prof.push(tc[idx0]);
-        td_prof.push(td0);
-        h_prof.push(SURFACE_LAYER_HEIGHT_M);
-        u_prof.push(u10[ij]);
-        v_prof.push(v10[ij]);
-
-        for k in 0..nz {
-            let idx = k * nxy + ij;
-            p_prof.push(pres_hpa[idx]);
-            t_prof.push(tc[idx]);
-            // Dewpoint from mixing ratio
-            let q = qv[idx].max(1e-10);
-            let e = q * pres_hpa[idx] / (0.622 + q);
-            let ln_e = (e / 6.112).max(1e-10).ln();
-            td_prof.push((243.5 * ln_e) / (17.67 - ln_e));
-            h_prof.push(h_agl[idx]);
-            u_prof.push(u[idx]);
-            v_prof.push(v[idx]);
-        }
-
-        // Find effective inflow layer bounds by testing CAPE/CIN at each level
-        let nz_aug = nz + 1;
-        let mut eff_base: Option<usize> = None;
-        let mut eff_top: usize = 0;
-
-        for k in 0..nz_aug {
-            if nz_aug - k < 2 {
-                break;
-            }
-
-            // Compute CAPE/CIN for a parcel lifted from level k
-            let (cape_k, cin_k, _, _) = crate::met::thermo::cape_cin_core(
-                &p_prof[k..],
-                &t_prof[k..],
-                &td_prof[k..],
-                &h_prof[k..],
-                p_prof[k],
-                t_prof[k],
-                td_prof[k],
-                "sb",
-                100.0,
-                300.0,
-                None,
+    Ok((0..nxy)
+        .into_par_iter()
+        .map(|ij| {
+            let (p_prof, t_prof, td_prof, h_prof) = build_surface_augmented_thermo_column(
+                &pres_hpa, &tc, &qv, &h_agl, psfc[ij], t2[ij], q2[ij], nz, nxy, ij,
             );
+            let layer = match find_effective_inflow_layer(&p_prof, &t_prof, &td_prof, &h_prof) {
+                Some(layer) => layer,
+                None => return 0.0,
+            };
 
-            if cape_k >= 100.0 && cin_k >= -250.0 {
-                if eff_base.is_none() {
-                    eff_base = Some(k);
-                }
-                eff_top = k;
-            } else if eff_base.is_some() {
-                // Effective layer must be continuous; stop at first failure
-                break;
+            if layer.top_h <= layer.base_h {
+                return 0.0;
             }
-        }
 
-        // If no effective layer found, SRH = 0
-        let base_k = match eff_base {
-            Some(k) => k,
-            None => return,
-        };
+            let mut u_prof = Vec::with_capacity(nz + 1);
+            let mut v_prof = Vec::with_capacity(nz + 1);
+            u_prof.push(u10[ij]);
+            v_prof.push(v10[ij]);
+            for k in 0..nz {
+                let idx = k * nxy + ij;
+                u_prof.push(u[idx]);
+                v_prof.push(v[idx]);
+            }
 
-        let eff_base_h = h_prof[base_k];
-        let eff_top_h = h_prof[eff_top];
+            let (sm_u, sm_v) = if let Some(sm) = custom_sm {
+                sm.at(ij)
+            } else {
+                let ((ru, rv), _, _) =
+                    crate::met::wind::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
+                (ru, rv)
+            };
 
-        if eff_top_h <= eff_base_h {
-            return;
-        }
-
-        // Trim profiles to start from effective base
-        let u_eff: Vec<f64> = u_prof[base_k..].to_vec();
-        let v_eff: Vec<f64> = v_prof[base_k..].to_vec();
-        let h_eff: Vec<f64> = h_prof[base_k..].to_vec();
-
-        // Get storm motion (from full augmented profile)
-        let (sm_u, sm_v) = if let Some(sm) = custom_sm {
-            sm.at(ij)
-        } else {
-            let ((ru, rv), _, _) =
-                crate::met::wind::bunkers_storm_motion(&u_prof, &v_prof, &h_prof);
-            (ru, rv)
-        };
-
-        // storm_relative_helicity interprets depth_m as absolute AGL,
-        // so pass eff_top_h directly
-        let (_, _, total) = crate::met::wind::storm_relative_helicity(
-            &u_eff, &v_eff, &h_eff, eff_top_h, sm_u, sm_v,
-        );
-        *srh_val = total;
-    });
-
-    Ok(srh)
+            let (_, _, total) = crate::met::wind::storm_relative_helicity(
+                &u_prof[layer.base_idx..],
+                &v_prof[layer.base_idx..],
+                &h_prof[layer.base_idx..],
+                layer.top_h,
+                sm_u,
+                sm_v,
+            );
+            total
+        })
+        .collect())
 }
 
 /// Configurable bulk wind shear magnitude (m/s). `[ny, nx]`
@@ -472,7 +409,7 @@ pub fn compute_mean_wind(f: &WrfFile, t: usize, opts: &ComputeOpts) -> WrfResult
     let mut mean_v = vec![0.0f64; nxy];
 
     let results: Vec<_> = (0..nxy)
-        .into_iter()
+        .into_par_iter()
         .map(|ij| {
             // Prepend 10m wind as the surface layer.
             let mut u_prof = Vec::with_capacity(nz + 1);

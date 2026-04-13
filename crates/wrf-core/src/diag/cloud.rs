@@ -1,7 +1,5 @@
 //! Cloud diagnostic variables: ctt, cloudfrac
 
-
-
 use crate::compute::ComputeOpts;
 use crate::error::WrfResult;
 use crate::file::WrfFile;
@@ -12,8 +10,12 @@ use crate::file::WrfFile;
 /// and returns the temperature there.
 pub fn compute_ctt(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let tc = f.temperature_c(t)?;
-    let qc = f.read_var("QCLOUD", t).unwrap_or_else(|_| vec![0.0; f.nxyz()]);
-    let qi = f.read_var("QICE", t).unwrap_or_else(|_| vec![0.0; f.nxyz()]);
+    let qc = f
+        .read_var("QCLOUD", t)
+        .unwrap_or_else(|_| vec![0.0; f.nxyz()]);
+    let qi = f
+        .read_var("QICE", t)
+        .unwrap_or_else(|_| vec![0.0; f.nxyz()]);
 
     let nxy = f.nxy();
     let nz = f.nz;
@@ -43,8 +45,12 @@ pub fn compute_ctt(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<
 /// - High: 450 hPa to model top
 pub fn compute_cloudfrac(f: &WrfFile, t: usize, _opts: &ComputeOpts) -> WrfResult<Vec<f64>> {
     let pres_hpa = f.pressure_hpa(t)?;
-    let qc = f.read_var("QCLOUD", t).unwrap_or_else(|_| vec![0.0; f.nxyz()]);
-    let qi = f.read_var("QICE", t).unwrap_or_else(|_| vec![0.0; f.nxyz()]);
+    let qc = f
+        .read_var("QCLOUD", t)
+        .unwrap_or_else(|_| vec![0.0; f.nxyz()]);
+    let qi = f
+        .read_var("QICE", t)
+        .unwrap_or_else(|_| vec![0.0; f.nxyz()]);
 
     let nxy = f.nxy();
     let nz = f.nz;
